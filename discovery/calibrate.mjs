@@ -6,12 +6,17 @@
 // Usage: node calibrate.mjs [corpus.json]
 
 import fs from 'node:fs';
+import path from 'node:path';
 import * as A from './algorithm.js';
 import * as R from './rules.js';
 
 A.validateRules();
 
-const corpus = JSON.parse(fs.readFileSync(process.argv[2] ?? './corpus.json', 'utf8'));
+// Resolved against this file's directory, not the shell's cwd. collect.mjs
+// already did this; calibrate.mjs did not, so it only ran from inside
+// discovery/ and failed from the project root.
+const corpusPath = process.argv[2] ?? path.join(import.meta.dirname, 'corpus.json');
+const corpus = JSON.parse(fs.readFileSync(corpusPath, 'utf8'));
 const NOW = Date.now();
 
 const scored = corpus.map((r) => ({ raw: r, b: A.scoreStageB(r, r.readme, NOW) }));

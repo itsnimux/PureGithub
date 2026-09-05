@@ -82,7 +82,28 @@ export const HARD_REJECT = {
 // vmess vless trojan ... configs"). Hence descPatterns, weighted 2 so a
 // description match plus any one other signal is enough.
 export const CONFIG_DUMP_SIGNALS = {
-  noLanguagePoints: 2,   // GitHub detected no programming language at all
+  // 1, not 2. This was measured and corrected.
+  //
+  // At 2 points, "GitHub detected no programming language" ALONE reached
+  // rejectAtScore, so any repo with no code was treated as a config dump: 131
+  // of the 187 flagged repos in the corpus were flagged by this signal and
+  // nothing else. That group is mostly the opposite of a dump —
+  // barnamenevisi/free-resources (1266 stars, a Persian learning-resource
+  // archive), Hameds/APIs-made-in-Iran (2138), ai-boost/awesome-prompts (8824),
+  // VahidN/nuget-net-melli-mirrors (a NuGet mirror list for Iranian
+  // developers). Four of them still reached the LLM gate carrying a −35
+  // penalty they had not earned.
+  //
+  // "No language" is real evidence, but it is WEAK evidence: a curated list,
+  // documentation, a dataset and a config dump all have no language. At 1 point
+  // it corroborates instead of deciding — a dump must now also look like one by
+  // name, topic or description.
+  //
+  // Verified against the regression fixtures: all nine known dumps still score
+  // >= rejectAtScore (3 to 6, penalties −70 to −175), because every one of them
+  // matches at least two other signals. Corpus flagging drops from 187 to 56,
+  // and the only-no-language group goes to zero.
+  noLanguagePoints: 1,
   namePatternPoints: 2,
   topicPatternPoints: 1,
   descPatternPoints: 2,
@@ -208,17 +229,35 @@ export const LANES = {
   // The first draft rejected these outright (velocity cap 30/day). That was
   // wrong: a tool that spikes usually spikes BECAUSE it solves a widespread
   // problem, so introducing it helps more people.
-  //
-  // Convenient property: lifetime star_velocity is an accurate CURRENT
-  // velocity measure in this lane specifically, because a trending repo is
-  // young by definition, so the lifetime average has not had time to decay.
-  // The metric's known flaw (see MOMENTUM_NOTE) does not bite here.
   trending: {
     starsMin: 200,
     starsMax: null,
     // Lower than other lanes — newness is the point. Not 0, because a
     // three-day-old repo has no track record and is often a reupload.
     minAgeDays: 7,
+
+    // AGE CEILING — added after measurement, and it closes a real hole.
+    //
+    // The original comment claimed lifetime star_velocity is an accurate
+    // CURRENT velocity measure "in this lane specifically, because a trending
+    // repo is young by definition". That reasoning is circular: nothing made
+    // the lane young, so the assumption failed. Measured on the corpus, 10 of
+    // 76 lane members were older than 60 days, including:
+    //     golang/go      4401 days old, lifetime velocity 31.2/day, 137k stars
+    //     Homebrew/brew  3835 days old, 12.9/day, 49k stars
+    // Neither is trending. They are enormous long-lived projects whose LIFETIME
+    // average happens to exceed 12/day — exactly the flaw MOMENTUM_NOTE warns
+    // about, biting in the one lane that was assumed immune.
+    //
+    // 90 days, not 60: the trending QUERY asks for created:<60d, so a 60-day
+    // ceiling would sit exactly on the query boundary and evict repos the query
+    // deliberately fetched. Measured, a 60-day cap also pushed 2 repos into no
+    // lane at all (7k stars at 60 days old is above hidden_gem's 4000 ceiling
+    // and below established's 180-day floor — the known LANE_COVERAGE_NOTE
+    // gap). At 90 days, all 8 evicted repos land in `established`, which is
+    // where a large old still-active project belongs. No coverage is lost.
+    maxAgeDays: 90,
+
     maxDaysSincePush: 30,
     minVelocityPerDay: 12,   // the entry condition for this lane
     attentionCurve: 'rising',
@@ -538,6 +577,68 @@ export const AI_BOOST = {
   ],
 };
 
+// --- Prompt dumps ---
+// The AI-era equivalent of a config dump, and the largest measured leak in the
+// funnel. The calibration corpus includes a deliberate `chatgpt prompts` query;
+// of its 88 repos, 27 (31%) reached the LLM gate — against 0% for the free-node
+// query and 5% for tutorials. AI_BOOST.slopPatterns fired on only 3 of the 27.
+//
+// Why they must not be posted, and why this is not just taste: a prompt list is
+// not software. There is nothing to install or run, the contents rot as models
+// change, and several in the corpus are jailbreak collections
+// (BlackTechX011/HacxGPT-Jailbreak-prompts, 0xk1h0/ChatGPT_DAN) which the
+// channel would be endorsing. They score well precisely because they are easy
+// to present: a big README, many stars, real topics.
+//
+// A SEPARATE detector rather than more slopPatterns, for the same reason
+// CONFIG_DUMP_SIGNALS is separate: the distinction that matters is against real
+// software in the same space. `kardolus/chatgpt-cli`, `czhou578/llm-god` and
+// `win4r/AISuperDomain` are genuine tools whose descriptions are full of the
+// words "chatgpt" and "prompt". Single-keyword matching cannot separate them;
+// scored signals can.
+//
+// Measured on hand-labelled ground truth from the corpus (18 dumps, 9 tools):
+// detects 16 of 18, with 0 false positives on the tools. Corpus-wide it flags
+// 47 of 1075, and inspection of all 47 found no real software among them.
+//
+// The two misses are deliberate rather than chased: awesome-gpt4o-images and
+// GenerativeAI-Prompt-Sample-Japanese are image-prompt galleries whose
+// descriptions read like ordinary curated lists. Catching them would need
+// patterns broad enough to hit real list repos, and a curated list is an
+// allowed lane. They score 2, so they take a partial penalty and compete at a
+// disadvantage.
+export const PROMPT_DUMP_SIGNALS = {
+  namePoints: 2,
+  descPoints: 2,
+  noLanguagePoints: 1,   // corroborating only, same lesson as CONFIG_DUMP_SIGNALS
+  rejectAtScore: 3,      // needs name OR desc plus something else — never no-language alone
+
+  namePatterns: [
+    'prompts?[-_ ]?(list|collection|library|pack|vault|dump|leaks?)',
+    '(system|leaked|jailbreak)[-_ ]?prompts?',
+    'prompts?[-_ ]?(zh|cn|ja|jp|kr)$',
+    'awesome[-_ ]?(chatgpt|gpt\\d?o?|ai)?[-_ ]?prompts?',
+    'jailbreak', '\\bdan\\b',
+    'prompt[-_ ]?engineering',
+    'instruction[-_ ]?datasets?',
+    '[-_]prompts?$', '^prompts?[-_.]', 'prompts?[-_ ]?(chat|hub|store)',
+  ],
+  descPatterns: [
+    '(collection|curated|list|set|library|archive)\\s+(of\\s+)?[\\w\\s-]{0,24}prompts?',
+    'prompts?\\s+(collection|library|list|repository|vault|archive)',
+    '(leaked|extracted|system)\\s+prompts?',
+    'prompts?\\s+(for|from)\\s+(chatgpt|gpt|claude|gemini|midjourney|top-rated)',
+    'jailbreaks?\\s+prompt', 'prompt\\s+injection/?leaking',
+    'prompts?\\s+leaking', 'collect\\s+prompts?',
+    'prompt\\s+(manager|generation model)',
+    'awesome\\s+curated\\s+collection',
+    'resources\\s+for\\s+[\\w\\s-]{0,30}prompt',
+    '\\d+\\s+prompts?', 'prompts?\\s+(cover|covers)\\s+a\\s+range',
+    // CJK: "tuning guide" / "prompt words" / "prompt" / "curated prompts"
+    '调教指南', '提示词', 'プロンプト', 'prompt\\s+精选',
+  ],
+};
+
 // --- Iranian creator ---
 // MEASURED LIMITATION, read before tuning. This is the least reliable
 // detector in the file. Of ten confirmed Iranian maintainers checked against
@@ -591,6 +692,17 @@ export const PENALTIES = {
   // else about it is excellent.
   configDumpPerPoint: 35,
 
+  // Prompt dumps, scaled the same way:
+  //   penalty = promptDumpPerPoint * (dumpScore - rejectAtScore + 1)
+  //
+  // Sized from the measured leaks. The strongest prompt dump in the corpus
+  // reached total=107 (ai-boost/awesome-prompts, 8824 stars) with quality 92 —
+  // it presents extremely well. At 30 points per unit a score-5 dump takes
+  // 3 x 30 = 90, which drops it from 107 to 17, far below minTotalForLlm. A
+  // borderline score-3 match takes 30, enough to end its chances at the
+  // typical 70-90 band without pretending to certainty the detector lacks.
+  promptDumpPerPoint: 30,
+
   learningProject: 20,
   // Must roughly cancel the +15 AI boost so a wrapper nets negative.
   aiSlop: 18,
@@ -612,15 +724,25 @@ export const PENALTY_THRESHOLDS = {
   bloatedSizeKb: 100_000,
 };
 
+// Note the explicit `s?` on every noun. This is the SIXTH instance of the same
+// regex-boundary family of bugs (see the four documented in the calibration
+// notes). compile() anchors with (?![a-z0-9]), and a trailing "s" is [a-z], so
+// the lookahead fails on any plural: `tutorial` matched but `tutorials` did not.
+//
+// Measured cost of that one character: of nine junk_learning repos that reached
+// the LLM gate, four were named exactly this way — luuquangvu/tutorials,
+// deepset-ai/haystack-tutorials, triton-inference-server/tutorials and
+// ChristianLempa/boilerplates — and took no penalty at all. Naming a tutorial
+// repo in the plural is the norm, not the exception.
 export const LEARNING_PROJECT_PATTERNS = [
-  'tutorial', 'boilerplate', 'starter kit', 'starter template', 'scaffold',
-  'my first', 'learning project', 'practice project', 'course project',
-  'exercises', 'exercise solutions', 'homework', 'bootcamp',
-  'clone of', 'a clone', 'todo app', 'todo list app', 'crud app',
-  'sample app', 'sample project', 'demo project', 'example project',
-  'test project', 'playground for learning', 'follow along',
-  'coding challenge', 'leetcode', 'advent of code', 'hacktoberfest',
-  'interview questions',
+  'tutorials?', 'boilerplates?', 'starter kits?', 'starter templates?', 'scaffold',
+  'my first', 'learning projects?', 'practice projects?', 'course projects?',
+  'exercises?', 'exercise solutions?', 'homework', 'bootcamps?',
+  'clone of', 'a clone', 'todo apps?', 'todo list apps?', 'crud apps?',
+  'sample apps?', 'sample projects?', 'demo projects?', 'example projects?',
+  'test projects?', 'playground for learning', 'follow along',
+  'coding challenges?', 'leetcode', 'advent of code', 'hacktoberfest',
+  'interview questions?',
 ];
 // 'cheat sheet' and 'roadmap' were in the earlier draft and have been
 // REMOVED: they are legitimate curated_list candidates.
@@ -645,7 +767,40 @@ export const INSTALL_PATTERNS = [
 // ---------------------------------------------------------------------------
 
 export const FUNNEL = {
-  readmeFetchLimit: 120,   // stage 1 -> 2, one core API call each
+  readmeFetchLimit: 120,   // stage 1 -> 2, one raw.githubusercontent fetch each
+
+  // README budget is split PER LANE, not taken from one global ranking.
+  //
+  // MEASURED PROBLEM, found by dryrun.mjs. A single global sort by total score
+  // starves four of the six lanes, because relevance boosts are part of the
+  // total and only two lanes can earn them. Mean values across 801 eligible
+  // corpus repos:
+  //     iran_relevant   quality 53.6   relevance +25.1
+  //     ai_agents       quality 48.8   relevance +15.0
+  //     curated_list    quality 59.1   relevance  +7.8
+  //     established     quality 63.1   relevance  +0.5
+  //     trending        quality 50.5   relevance  +0.2
+  //     hidden_gem      quality 43.7   relevance  +0.4
+  //
+  // So the top 120 came out as iran 99, ai 16, lists 5, and ZERO for trending,
+  // hidden_gem and established. The top 16 were all iran_relevant. The best
+  // repo in the trending lane ranked 182nd overall; the best established one
+  // (gunicorn) ranked 206th. Those lanes would never have had a README fetched,
+  // which makes their query budget and their LANE_QUOTA pure decoration.
+  //
+  // Note this is NOT a scoring bug: `established` genuinely has the highest
+  // mean quality of any lane (63.1) and still lost, because it cannot earn a
+  // relevance boost by definition. Comparing a boosted total against an
+  // unboosted one across lanes is the error. Lanes exist precisely because
+  // "obscure" and "trending" are not comparable on one axis — the same
+  // reasoning that produced separate attention curves has to apply to the
+  // README budget too.
+  //
+  // Shares are proportional to LANE_QUOTA, so a lane's slice of the expensive
+  // stage matches its slice of the output. Leftover capacity from a lane with
+  // too little supply is redistributed at runtime, so nothing is wasted.
+  readmeBudgetPerLane: true,
+
   // stage 2 -> 3. The expensive gate: with free-tier models capped near 50
   // requests/day (AGENTS.md §8), this number IS the daily LLM budget.
   // 16 supports 3-4 published posts/day with room for human rejections.
@@ -685,13 +840,51 @@ export const FUNNEL = {
   // Verified against measured supply: 8 is reachable every run.
   finalSelectionSize: 8,
 
-  // Purpose-level duplicate check, distinct from repo-level dedup. Stops the
-  // channel posting a fourth v2ray client that does nothing new — which is
-  // exactly the "must differentiate from competitors" requirement. Uses
-  // pg_trgm similarity against already-published descriptions; above this
-  // threshold the LLM is explicitly asked whether the repo improves on what
-  // we already posted.
-  purposeSimilarityThreshold: 0.45,
+  // --- Purpose-level duplicate detection ---
+  // Distinct from repo-level dedup (the unique index). This is what stops the
+  // channel posting a fourth v2ray client that does nothing new — the explicit
+  // "must differentiate from competitors" requirement.
+  //
+  // MEASURED, and the first design was wrong. Description trigram similarity
+  // was tried alone at 0.45. Tested on the real same-purpose pairs this rule
+  // exists for:
+  //     v2rayA ~ v2rayN            0.32
+  //     hiddify-app ~ v2rayN       0.22
+  //     hazm ~ shekar              0.17   (two Persian NLP libraries)
+  //     s-ui ~ Hiddify-Manager     0.04   (two sing-box panels)
+  // Not one reached 0.45. Two tools can do the identical job and describe it in
+  // completely different words, so at 0.45 the rule would never fire, and
+  // lowering the threshold does not fix it: across 762 corpus repos, 0.45 flags
+  // 56 pairs and 0.25 flags 624, and the pairs it does flag are mostly
+  // TEMPLATED text — "Free V2ray Configs, Updating Every 15 minutes" appearing
+  // verbatim in two different dump repos, or the same tutorial translated into
+  // five languages. It detects copied wording, not shared purpose.
+  //
+  // Topic overlap (Jaccard) measures the same pairs far better:
+  //     Hiddify-Manager ~ hiddify-app   0.65
+  //     Hiddify-Manager ~ s-ui          0.43
+  //     hiddify-app ~ s-ui              0.40
+  //     hazm ~ vazirmatn                0.13   (unrelated, correctly low)
+  //     anything ~ JalaliDatePicker     0.00
+  // Distribution over 776 corpus repos with >=2 topics: 0.30 flags 216 pairs,
+  // 0.40 flags 76, 0.50 flags 35. Inspecting the 0.30+ list, the pairs are
+  // genuinely same-purpose (two Persian GNOME calendar extensions at 0.71, two
+  // Iran routing-rule sets at 0.62, two awesome-Persian-media lists at 0.50).
+  //
+  // So BOTH signals are kept, with either one sufficient to trigger a
+  // comparison. They fail in opposite directions: topics are missing or sparse
+  // on 28% of corpus repos, where the description is all there is; descriptions
+  // are unreliable when two authors word the same thing differently, where
+  // topics work.
+  //
+  // Neither DECIDES anything. Crossing a threshold only means the already
+  // published repo is shown to the LLM with the question "does this improve on
+  // it, or repeat it?" — differentiation is a judgement, and LLM_MUST_JUDGE
+  // says so.
+  purposeSimilarityThreshold: 0.45,   // description trigram; rarely fires alone
+  purposeTopicJaccardThreshold: 0.35, // between 0.30 (216 pairs) and 0.40 (76)
+  purposeMinSharedTopics: 3,          // guard: 1/2 topics reaches 0.5 trivially
+  purposeCompareLimit: 5,             // most similar published repos shown to the LLM
 };
 
 // ---------------------------------------------------------------------------
@@ -733,6 +926,59 @@ export const QUERY = {
     established: 1,
     lists: 1,
   },
+
+  // --- Multi-topic syntax: MEASURED, and it is not the obvious one ---
+  // `topic:a OR topic:b` returns HTTP 422:
+  //   "The search contains only logical operators (AND / OR / NOT) without any
+  //    search terms. Logical operators only apply to text, not to qualifiers."
+  //
+  // The working form is the comma list, `topic:a,b`, and it is a true UNION.
+  // Verified numerically: topic:jalali = 52, topic:persian-calendar = 47,
+  // topic:jalali,persian-calendar = 90, and the intersection (space-separated,
+  // which means AND) = 9. 52 + 47 - 9 = 90 exactly.
+  //
+  // This is not a style preference — it is why five of the eighteen queries in
+  // collect.mjs silently returned nothing during the first calibration
+  // (iran_circumv, iran_censor, ai_mcp, ai_agents, ai_llm all used OR). Every
+  // repo attributed to the ai_agents lane in that corpus arrived incidentally
+  // through some other query.
+  topicSeparator: ',',
+
+  // --- Hard limits imposed by the GitHub search API itself ---
+  // Both are documented API limits, not preferences. Exceeding either returns
+  // HTTP 422 and the run silently loses that query, so queries.js asserts
+  // against them at build time rather than discovering it at request time.
+  maxQueryChars: 256,
+  // "Queries containing more than five AND, OR, or NOT operators will be
+  // rejected." With comma unions, topic lists spend none of this budget, so it
+  // now only guards the text-term queries (the curated-list class).
+  maxOperators: 4,
+
+  // A comma union costs no operators, so this cap is not about the API limit —
+  // it is about not making one query so broad that its first 100 results are
+  // all from the single largest topic. Measured yields per topic show why:
+  // topic:llm alone returns 3174 repos against topic:fine-tuning's 90, so
+  // unioning them lets llm swamp the page. Six is the largest pool size, and
+  // the pools are hand-grouped by theme, so a full pool is a coherent union.
+  maxTopicsPerQuery: 6,
+
+  // `archived:false` is a free qualifier (not an operator) and HARD_REJECT
+  // discards archived repos anyway, so filtering server-side stops archived
+  // repos consuming result slots. Calibration wasted 13 of 1075 this way.
+  excludeArchived: true,
+
+  // Spacing between search calls. GitHub's search endpoint allows 30/min
+  // authenticated, 10/min unauthenticated; the workflow authenticates with the
+  // GitHub credential, so 2.5s keeps a 14-query run inside 30/min with margin
+  // and finishes in ~35s.
+  searchSpacingMs: 2500,
+
+  // Below this, a query is not pulling its weight and the budget should move
+  // elsewhere. Set from measured per-topic yields: the weakest live iran topic
+  // (persian-nlp, 6 repos) is genuinely marginal, while the weakest pool UNION
+  // is comfortably above 100. Used by verify-queries.mjs as a warning
+  // threshold, not enforced at runtime — a thin query is still worth firing.
+  minExpectedYield: 30,
 };
 
 export const QUERY_CLASSES = {
@@ -745,7 +991,21 @@ export const QUERY_CLASSES = {
       ['iran', 'iranian', 'persian', 'farsi'],
       ['v2ray', 'xray', 'sing-box', 'hysteria2', 'vless', 'reality'],
       ['anti-censorship', 'censorship-circumvention', 'firewall-bypass', 'gfw'],
-      ['jalali', 'persian-calendar', 'rtl', 'persian-nlp'],
+      // `rtl` is deliberately NOT in this pool, even though it IS a tier-2
+      // scoring topic. Measured on the live top 100 of `topic:rtl stars:20..*`:
+      // 62 were hardware projects (RTL = Register Transfer Level — Chisel,
+      // Verilator, rocket-chip, OpenROAD) and only 38 were text-direction
+      // work. As a QUERY it would spend 62% of a 100-result page on chip
+      // design; as a SCORING topic it is harmless, because a hardware repo
+      // picking up +15 relevance still has to clear the quality gate on its
+      // own merits.
+      //
+      // Restricted to unambiguous alternatives, all verified to have live
+      // population at stars:20..*: persian-language 48, hijri 35,
+      // right-to-left 25, shamsi 19, bidi 12. `rtl-layout` (0),
+      // `farsi-language` (1) and `iran-tech` (0) were measured and dropped as
+      // empty.
+      ['jalali', 'persian-calendar', 'persian-nlp', 'persian-language', 'shamsi', 'right-to-left'],
     ],
     starRange: '20..*',       // no ceiling
     pushedWithinDays: 400,
@@ -756,6 +1016,16 @@ export const QUERY_CLASSES = {
   },
 
   ai: {
+    // Pools grouped so each union is roughly comparable in size, because a
+    // union is read only 100 deep and the largest member dominates the page.
+    // Measured union totals at stars:80..* pushed:<120d — p1 (mcp) 3117,
+    // p2 (llm) 3786, p3 (tools) 1007.
+    //
+    // Measured overlap: p1 and p2 share 34 of their top 100, the largest
+    // duplicate pair in the whole plan. That is inherent — an MCP server is
+    // usually also tagged `llm` — and is left alone rather than papered over,
+    // because splitting these pools further would only produce thinner queries
+    // with the same repos in them. The dedup step downstream absorbs it.
     topicPools: [
       ['mcp', 'model-context-protocol', 'ai-agent', 'agentic'],
       ['llm', 'rag', 'embeddings', 'local-llm', 'ollama'],
@@ -831,6 +1101,113 @@ export const TOPIC_SHARDS = [
   'profiling', 'static-site-generator', 'scraping', 'rss', 'backup',
   'encryption', 'reverse-engineering', 'p2p', 'decentralized',
 ];
+
+// ---------------------------------------------------------------------------
+// 8b. ROTATION
+// ---------------------------------------------------------------------------
+// Why rotation exists at all: GitHub returns at most 1000 results per query,
+// and the run only reads the first 100. A fixed query set therefore reads the
+// same 100 repos every single day — after run one, every later run is pure
+// waste. Rotation is what makes run 30 see different repos than run 1.
+//
+// The seed is the DAY NUMBER, not a random value or a stored counter:
+//   - reproducible, so a failed run can be replayed and debugged identically;
+//   - stateless, so nothing has to be persisted between runs;
+//   - monotonic, so consecutive days never repeat the same combination.
+//
+// Offsets are co-prime with their pool sizes wherever possible so the walk
+// visits the whole pool before repeating, instead of cycling a subset.
+
+export const ROTATION = {
+  // Day 0 of the schedule. Only affects which shard a given date lands on.
+  epochUtc: '2026-01-01',
+
+  // How many shard qualifiers a single hidden-gem query carries. One: two
+  // would over-narrow (`language:zig topic:ocr` matches almost nothing) and
+  // measurement is not needed to see that the intersection of a 23-item and a
+  // 54-item pool is mostly empty.
+  shardsPerHiddenQuery: 1,
+
+  // Hidden-gem queries alternate between a language qualifier and a topic
+  // qualifier. Both dimensions are needed: language sharding reaches
+  // ecosystems (a good Zig tool is invisible in a global star band), topic
+  // sharding reaches purposes (a good OCR tool likewise).
+  hiddenShardKinds: ['language', 'topic'],
+
+  // Prime-ish strides so the sequence does not settle into a short cycle
+  // against the pool lengths (23 languages, 54 topics, 5 star shards).
+  languageStride: 7,
+  topicStride: 11,
+  starShardStride: 2,
+};
+
+// ---------------------------------------------------------------------------
+// 8c. RECONSIDERATION / COOLDOWN
+// ---------------------------------------------------------------------------
+// The single most important rule for a REPEATING run, and the one thing the
+// step-1 workflow never needed.
+//
+// The problem, stated plainly: scores are almost stationary from one day to the
+// next. A repo that scored 118 today scores ~118 tomorrow. So an unconstrained
+// daily run selects the SAME top eight forever — it would send the same eight
+// repos to the LLM every day and, once those are published or rejected, sit
+// permanently on the ninth through sixteenth. Storing rejects (schema.sql) only
+// prevents re-INSERTING them; nothing yet prevents re-SPENDING quota on them.
+//
+// Cooldowns are therefore per outcome, because the outcomes carry very
+// different amounts of information:
+export const COOLDOWN = {
+  // Human said no. The strongest signal in the system — a person looked at the
+  // rendered caption and declined. Never reconsider automatically; if the repo
+  // deserves a second chance, it can be resubmitted through the manual form.
+  humanRejected: null,          // null = never
+
+  // Published. The unique index already makes a second published post
+  // impossible; this keeps such repos out of the candidate query so they do
+  // not occupy scoring slots.
+  published: null,
+
+  // LLM said reject. A model's verdict on a repo's novelty and usefulness is
+  // not going to flip because a week passed. Long, but not never: the repo
+  // itself can genuinely change (a rewrite, a v2), and a year is long enough
+  // that re-asking costs one LLM call per repo per year.
+  llmRejected: 365,
+
+  // Scored, cleared the hard filters, but finished below minTotalForLlm. This
+  // is the group that MUST come back: it holds every repo currently growing
+  // toward the threshold. 30 days is roughly the shortest interval over which
+  // a small repo's star count and README meaningfully change.
+  nearMiss: 30,
+
+  // Scored, above the gate, but lost its slot to lane quota or a diversity cap
+  // on the day. Nothing is wrong with it — it was simply eighth in a field of
+  // eight. Short cooldown so it competes again almost immediately.
+  notSelected: 3,
+
+  // Failed a hard reject that could stop being true: idle-too-long, no README
+  // yet, too few stars for its lane. These are states, not verdicts.
+  softReject: 45,
+
+  // Failed a hard reject that will effectively never stop being true:
+  // archived, fork, template, piracy, config dump. Kept in the table purely as
+  // a dedup memory so no run ever fetches their README again.
+  permanentReject: null,
+};
+
+// Which hard-reject reasons are permanent vs. recoverable. Used to pick the
+// cooldown above. Listed explicitly rather than inferred, so adding a new
+// reject reason forces a deliberate decision about its cooldown.
+export const REJECT_PERMANENCE = {
+  archived: 'permanent',      // author declared it over
+  fork: 'permanent',
+  template: 'permanent',
+  disabled: 'permanent',
+  piracy: 'permanent',
+  'config-dump': 'permanent',
+  oversized: 'permanent',     // repos do not shrink below 1GB
+  'no-readme': 'soft',        // a README can be added
+  'no-lane': 'soft',          // stars grow, pushes happen
+};
 
 // ---------------------------------------------------------------------------
 // 9. CATEGORIES — spec §18, verbatim
