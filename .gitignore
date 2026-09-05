@@ -3,3 +3,7 @@
 backups/
 *.dump
 *.sql.gz
+
+# Calibration corpora — large, regenerable with discovery/collect.mjs
+discovery/corpus.json
+discovery/reference.json
