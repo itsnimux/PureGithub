@@ -589,7 +589,15 @@ export function outcomeOf(row) {
   if (reason) {
     return R.REJECT_PERMANENCE[reason] === 'permanent' ? 'permanentReject' : 'softReject';
   }
-  if (row.last_total != null && row.last_total < R.FUNNEL.minTotalForLlm) return 'nearMiss';
+  // nearMiss requires a score that is COMPARABLE to the threshold, which only a
+  // README-bearing stage is. See COMPARABLE_SCORE_STAGES for the measurement:
+  // stage-A scores run ~22 points low, so treating them as near-misses locks
+  // out hundreds of repos for 30 days, 42% of which would have cleared the gate.
+  if (row.last_total != null
+      && R.COMPARABLE_SCORE_STAGES.includes(row.last_stage)
+      && row.last_total < R.FUNNEL.minTotalForLlm) {
+    return 'nearMiss';
+  }
   if (row.evaluated_at) return 'notSelected';
   return 'notSelected';
 }
@@ -850,6 +858,15 @@ export function validateRules() {
     if (kind !== 'permanent' && kind !== 'soft') {
       errs.push(`REJECT_PERMANENCE.${reason} must be "permanent" or "soft", got "${kind}"`);
     }
+  }
+  // Stage 'a' must never be treated as comparable to minTotalForLlm. Its scores
+  // run ~22 points low by construction (no README), so allowing it here would
+  // relabel hundreds of perfectly good candidates as nearMiss and lock them out
+  // for COOLDOWN.nearMiss days. See COMPARABLE_SCORE_STAGES for the numbers.
+  if (!Array.isArray(R.COMPARABLE_SCORE_STAGES) || !R.COMPARABLE_SCORE_STAGES.length) {
+    errs.push('COMPARABLE_SCORE_STAGES must be a non-empty array');
+  } else if (R.COMPARABLE_SCORE_STAGES.includes('a')) {
+    errs.push('COMPARABLE_SCORE_STAGES must not include stage "a" — metadata-only scores are not comparable to minTotalForLlm');
   }
   // The candidate pool must be at least the size of the final post set, or the
   // run cannot fill the channel even when every candidate is approved.

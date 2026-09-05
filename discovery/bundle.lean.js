@@ -449,6 +449,7 @@ const REJECT_PERMANENCE = {
   'no-readme': 'soft',        // a README can be added
   'no-lane': 'soft',          // stars grow, pushes happen
 };
+const COMPARABLE_SCORE_STAGES = ['b', 'llm', 'selected'];
 const CATEGORIES = [
   'AI', 'developer-tools', 'security', 'linux', 'web', 'mobile', 'creative',
   'fun', 'experimental', 'productivity', 'backend', 'gaming', 'data',
@@ -459,7 +460,7 @@ const LLM_MUST_JUDGE = [
   'novelty',
   'wow_factor',
 ];
-  return { HARD_REJECT, CONFIG_DUMP_SIGNALS, PIRACY_PATTERNS, LANE_PRIORITY, LANES, IDLE_FORGIVENESS_NOTE, LANE_COVERAGE_NOTE, LANE_QUOTA, MULTI_LANE_BONUS, CURATED_LIST_PATTERNS, CURATED_LIST_TOPICS, QUALITY, CRAFT, README_BAND, ATTENTION_CURVES, ALIVENESS, MOMENTUM_NOTE, ADOPTION, RELEVANCE, IRAN_RELEVANCE, AI_BOOST, PROMPT_DUMP_SIGNALS, IRANIAN_CREATOR, PENALTIES, PENALTY_THRESHOLDS, LEARNING_PROJECT_PATTERNS, DEMO_MEDIA_PATTERNS, INSTALL_PATTERNS, FUNNEL, DIVERSITY, QUERY, QUERY_CLASSES, LANGUAGE_SHARDS, TOPIC_SHARDS, ROTATION, COOLDOWN, REJECT_PERMANENCE, CATEGORIES, LLM_MUST_JUDGE };
+  return { HARD_REJECT, CONFIG_DUMP_SIGNALS, PIRACY_PATTERNS, LANE_PRIORITY, LANES, IDLE_FORGIVENESS_NOTE, LANE_COVERAGE_NOTE, LANE_QUOTA, MULTI_LANE_BONUS, CURATED_LIST_PATTERNS, CURATED_LIST_TOPICS, QUALITY, CRAFT, README_BAND, ATTENTION_CURVES, ALIVENESS, MOMENTUM_NOTE, ADOPTION, RELEVANCE, IRAN_RELEVANCE, AI_BOOST, PROMPT_DUMP_SIGNALS, IRANIAN_CREATOR, PENALTIES, PENALTY_THRESHOLDS, LEARNING_PROJECT_PATTERNS, DEMO_MEDIA_PATTERNS, INSTALL_PATTERNS, FUNNEL, DIVERSITY, QUERY, QUERY_CLASSES, LANGUAGE_SHARDS, TOPIC_SHARDS, ROTATION, COOLDOWN, REJECT_PERMANENCE, COMPARABLE_SCORE_STAGES, CATEGORIES, LLM_MUST_JUDGE };
 })();
 const A = (function (R) {
 const DAY = 86_400_000;
@@ -835,7 +836,11 @@ function outcomeOf(row) {
   if (reason) {
     return R.REJECT_PERMANENCE[reason] === 'permanent' ? 'permanentReject' : 'softReject';
   }
-  if (row.last_total != null && row.last_total < R.FUNNEL.minTotalForLlm) return 'nearMiss';
+  if (row.last_total != null
+      && R.COMPARABLE_SCORE_STAGES.includes(row.last_stage)
+      && row.last_total < R.FUNNEL.minTotalForLlm) {
+    return 'nearMiss';
+  }
   if (row.evaluated_at) return 'notSelected';
   return 'notSelected';
 }
@@ -994,6 +999,11 @@ function validateRules() {
     if (kind !== 'permanent' && kind !== 'soft') {
       errs.push(`REJECT_PERMANENCE.${reason} must be "permanent" or "soft", got "${kind}"`);
     }
+  }
+  if (!Array.isArray(R.COMPARABLE_SCORE_STAGES) || !R.COMPARABLE_SCORE_STAGES.length) {
+    errs.push('COMPARABLE_SCORE_STAGES must be a non-empty array');
+  } else if (R.COMPARABLE_SCORE_STAGES.includes('a')) {
+    errs.push('COMPARABLE_SCORE_STAGES must not include stage "a" — metadata-only scores are not comparable to minTotalForLlm');
   }
   if (R.FUNNEL.llmCandidateLimit < R.FUNNEL.finalSelectionSize) {
     errs.push(`FUNNEL.llmCandidateLimit (${R.FUNNEL.llmCandidateLimit}) must be >= finalSelectionSize (${R.FUNNEL.finalSelectionSize})`);

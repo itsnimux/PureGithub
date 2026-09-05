@@ -83,16 +83,18 @@ function psql(sql) {
 function loadHistory() {
   const rows = psql(`SELECT github_id, published::text, human_rejected::text,
                             COALESCE(verdict,''), COALESCE(last_total::text,''),
+                            COALESCE(last_stage,''),
                             COALESCE(last_reject_reason,''), last_checked
                        FROM repositories`);
   if (rows === null) return { available: false, byId: new Map(), published: [] };
   const byId = new Map();
-  for (const [id, pub, hr, verdict, total, reason, checked] of rows) {
+  for (const [id, pub, hr, verdict, total, stage, reason, checked] of rows) {
     byId.set(Number(id), {
       published: pub === 't',
       human_rejected: hr === 't',
       verdict: verdict || null,
       last_total: total === '' ? null : Number(total),
+      last_stage: stage || null,
       last_reject_reason: reason || null,
       last_checked: checked,
     });
@@ -297,9 +299,11 @@ async function doRun(now, history, seenAcrossRuns, corpusPool) {
 
   // --- 3. stage A: metadata only ---
   const stageA = [];
+  const hardRejects = [];
   for (const repo of candidates) {
     const s = A.scoreStageA(repo, now);
     if (!s.eligible) {
+      hardRejects.push(s);
       for (const why of s.rejects) stats.rejectReasons[why] = (stats.rejectReasons[why] ?? 0) + 1;
       continue;
     }
@@ -312,6 +316,12 @@ async function doRun(now, history, seenAcrossRuns, corpusPool) {
   // that forced this. A global sort starved four of the six lanes completely.
   const forReadme = A.allocateReadmeBudget(stageA.map((x) => x.s), R.FUNNEL.readmeFetchLimit)
     .map((s) => stageA.find((x) => x.s === s));
+  const budgeted = new Set(forReadme.map((x) => x.s));
+  // Cleared stage A, lost the README lottery. Tracked separately because their
+  // score must be written with last_stage 'a' — it is not comparable to
+  // minTotalForLlm and must not label them nearMiss.
+  const stageAOnly = stageA.filter((x) => !budgeted.has(x.s)).map((x) => x.s);
+  stats.stageAOnly = stageAOnly.length;
   stats.readmeLanes = {};
   for (const item of forReadme) stats.readmeLanes[item.s.lane] = (stats.readmeLanes[item.s.lane] ?? 0) + 1;
 
@@ -359,6 +369,8 @@ async function doRun(now, history, seenAcrossRuns, corpusPool) {
     plan, stats, chosen: withSimilar, stageB,
     // Everything the run scored, so the simulation can write outcomes back.
     scoredAll: stageB,
+    stageAOnly,
+    hardRejects,
     selectedIds: new Set(sel.chosen.map((s) => s.repo.id)),
     byId,
   };
@@ -396,19 +408,47 @@ function applySimulatedOutcomes(out, history, now) {
       // Reached the LLM, was not posted. In production this is either a human
       // rejection or a lost slot; modelled as a human rejection, the harsher of
       // the two, so the cooldown is not flattered.
-      history.byId.set(id, { human_rejected: true, last_checked: iso, last_total: s.total });
+      history.byId.set(id, { human_rejected: true, last_checked: iso, last_total: s.total, last_stage: 'llm' });
     }
   }
 
   // Everything scored but not selected: recorded so its cooldown starts. This is
   // the group COOLDOWN.nearMiss and COOLDOWN.notSelected govern.
+  //
+  // last_stage matters as much as last_total here: only a README-bearing stage
+  // may produce a nearMiss (rules.COMPARABLE_SCORE_STAGES). Writing the stage is
+  // what keeps the multi-day test honest — without it every low score would look
+  // like a 30-day lockout and the run would appear to rotate far better than it
+  // really does.
   for (const s of out.scoredAll) {
     const id = s.repo.id;
     if (out.selectedIds.has(id) || history.byId.get(id)?.published) continue;
     history.byId.set(id, {
       last_total: s.total,
+      last_stage: 'b',
       last_checked: iso,
       evaluated_at: A.passesLlmGate(s) ? iso : null,
+    });
+  }
+
+  // Repos that cleared stage A but never earned a README. The run knows nothing
+  // about them beyond metadata, so they carry stage 'a' and get the short
+  // notSelected cooldown rather than being buried as near-misses.
+  for (const s of out.stageAOnly ?? []) {
+    const id = s.repo.id;
+    if (history.byId.has(id)) continue;
+    history.byId.set(id, { last_total: s.total, last_stage: 'a', last_checked: iso });
+  }
+
+  // Hard rejects, stored purely as dedup memory so their README is never fetched
+  // again. REJECT_PERMANENCE decides whether that memory expires.
+  for (const s of out.hardRejects ?? []) {
+    const id = s.repo.id;
+    if (history.byId.has(id)) continue;
+    history.byId.set(id, {
+      last_reject_reason: s.rejects[0] ?? null,
+      last_stage: 'a',
+      last_checked: iso,
     });
   }
 }
@@ -452,6 +492,7 @@ const main = async () => {
     const blocked = Object.values(s.cooldownBlocked).reduce((a, b) => a + b, 0);
     console.log(`    blocked by cooldown  ${nm(blocked, 6)}   ${Object.entries(s.cooldownBlocked).map(([k, v]) => `${k}:${v}`).join(' ') || '—'}`);
     console.log(`    stage A eligible     ${nm(s.stageAEligible, 6)}   ${pct(s.stageAEligible, s.reposUnique)}`);
+    console.log(`    no README budget     ${nm(s.stageAOnly ?? 0, 6)}   stored as stage 'a' -> notSelected ${R.COOLDOWN.notSelected}d, never nearMiss`);
     console.log(`    READMEs fetched      ${nm(s.readmesFetched, 6)}   (${s.readmesEmpty} empty)  per lane: ${Object.entries(s.readmeLanes ?? {}).map(([k, v]) => `${k} ${v}`).join(', ') || '—'}`);
     console.log(`    stage B eligible     ${nm(s.stageBEligible, 6)}   ${pct(s.stageBEligible, s.readmesFetched)}`);
     console.log(`    passed LLM gate      ${nm(s.gatePassed, 6)}   quality>=${R.FUNNEL.minQualityForLlm} and total>=${R.FUNNEL.minTotalForLlm}`);

@@ -35,6 +35,7 @@ SELECT g.github_id,
        r.human_rejected,
        r.verdict,
        r.last_total,
+       r.last_stage,
        r.last_reject_reason,
        r.last_checked,
        r.times_seen,
@@ -53,7 +54,13 @@ SELECT g.github_id,
          WHEN r.last_reject_reason IS NOT NULL
               AND r.last_checked > now() - ($5 || ' days')::interval
                                                THEN 'cooldown-soft-reject'
+         -- nearMiss only applies to a score that SAW A README. A stage-'a'
+         -- total is ~22 points low by construction (measured: mean +21.7 going
+         -- from stage A to stage B over 778 corpus repos), so comparing it to
+         -- minTotalForLlm mislabels 42% of the repos below the line. Must stay
+         -- in sync with rules.COMPARABLE_SCORE_STAGES / algorithm.outcomeOf.
          WHEN r.last_total IS NOT NULL AND r.last_total < $6
+              AND r.last_stage IN ('b','llm','selected')
               AND r.last_checked > now() - ($3 || ' days')::interval
                                                THEN 'cooldown-near-miss'
          WHEN r.last_checked > now() - ($4 || ' days')::interval

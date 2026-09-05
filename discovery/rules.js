@@ -1209,6 +1209,33 @@ export const REJECT_PERMANENCE = {
   'no-lane': 'soft',          // stars grow, pushes happen
 };
 
+// Which pipeline stages produce a score that may be compared against
+// FUNNEL.minTotalForLlm — and therefore which stages may label a repo
+// `nearMiss` (a 30-day lockout).
+//
+// MEASURED, and the first version of outcomeOf() got this wrong. Stage A scores
+// metadata only; craft points that need a README are structurally unavailable,
+// so a stage-A total is not on the same scale as the threshold it was compared
+// against. Across 778 corpus repos scored both ways:
+//     mean(stage B - stage A) = +21.7 points
+//     percentiles p10/p50/p90 = +12.3 / +24.0 / +33.0
+//     only 4 of 778 scored LOWER with the README
+// Of the repos below 70 at stage A, 249 crossed 70 once the README was read and
+// 343 did not — so 42% of them were not near-misses at all.
+//
+// Why that matters per run: stage A clears ~801 repos but only
+// FUNNEL.readmeFetchLimit (120) receive a README, leaving ~681 scored on
+// metadata alone. Labelling those `nearMiss` locked 551 of them out for 30 days,
+// including the ~42% that would have passed. The algorithm was burying its own
+// best candidates for a month.
+//
+// So the score is still stored (it is the only record of how a repo trended),
+// but it may not trigger the long cooldown unless a README-bearing stage
+// produced it. Everything else falls through to COOLDOWN.notSelected (3 days),
+// which is the correct meaning: "nothing was wrong with it, it just did not get
+// a slot today".
+export const COMPARABLE_SCORE_STAGES = ['b', 'llm', 'selected'];
+
 // ---------------------------------------------------------------------------
 // 9. CATEGORIES — spec §18, verbatim
 // ---------------------------------------------------------------------------

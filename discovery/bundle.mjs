@@ -255,12 +255,18 @@ const rows = [
   { published: true },
   { human_rejected: true, last_checked: new Date(NOW).toISOString() },
   { verdict: 'reject', last_checked: new Date(NOW - 10 * 86400000).toISOString() },
-  { last_total: 60, last_checked: new Date(NOW - 40 * 86400000).toISOString() },
+  // Same score, different stage: 'b' is a nearMiss (30d), 'a' is only
+  // notSelected (3d). Both shapes are compared so the bundle cannot drop the
+  // stage check that COMPARABLE_SCORE_STAGES adds.
+  { last_total: 60, last_stage: 'b', last_checked: new Date(NOW - 40 * 86400000).toISOString() },
+  { last_total: 60, last_stage: 'a', last_checked: new Date(NOW - 1 * 86400000).toISOString() },
+  { last_total: 60, last_checked: new Date(NOW - 1 * 86400000).toISOString() },
   { last_reject_reason: 'fork', last_checked: new Date(NOW - 999 * 86400000).toISOString() },
   { last_reject_reason: 'no-readme', last_checked: new Date(NOW - 50 * 86400000).toISOString() },
-  { evaluated_at: 'x', last_total: 90, last_checked: new Date(NOW - 1 * 86400000).toISOString() },
+  { evaluated_at: 'x', last_total: 90, last_stage: 'b', last_checked: new Date(NOW - 1 * 86400000).toISOString() },
 ];
 rows.forEach((row, i) => eq(`shouldReconsider[${i}]`, A.shouldReconsider(row, NOW), P.shouldReconsider(row, NOW)));
+rows.forEach((row, i) => eq(`outcomeOf[${i}]`, A.outcomeOf(row), P.outcomeOf(row)));
 
 // 5. selectFinal. Nothing else calls it yet, so this is its only coverage.
 //    Verdicts and categories are synthetic, but the same synthetic values are

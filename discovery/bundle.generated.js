@@ -1240,6 +1240,33 @@ const REJECT_PERMANENCE = {
   'no-lane': 'soft',          // stars grow, pushes happen
 };
 
+// Which pipeline stages produce a score that may be compared against
+// FUNNEL.minTotalForLlm — and therefore which stages may label a repo
+// `nearMiss` (a 30-day lockout).
+//
+// MEASURED, and the first version of outcomeOf() got this wrong. Stage A scores
+// metadata only; craft points that need a README are structurally unavailable,
+// so a stage-A total is not on the same scale as the threshold it was compared
+// against. Across 778 corpus repos scored both ways:
+//     mean(stage B - stage A) = +21.7 points
+//     percentiles p10/p50/p90 = +12.3 / +24.0 / +33.0
+//     only 4 of 778 scored LOWER with the README
+// Of the repos below 70 at stage A, 249 crossed 70 once the README was read and
+// 343 did not — so 42% of them were not near-misses at all.
+//
+// Why that matters per run: stage A clears ~801 repos but only
+// FUNNEL.readmeFetchLimit (120) receive a README, leaving ~681 scored on
+// metadata alone. Labelling those `nearMiss` locked 551 of them out for 30 days,
+// including the ~42% that would have passed. The algorithm was burying its own
+// best candidates for a month.
+//
+// So the score is still stored (it is the only record of how a repo trended),
+// but it may not trigger the long cooldown unless a README-bearing stage
+// produced it. Everything else falls through to COOLDOWN.notSelected (3 days),
+// which is the correct meaning: "nothing was wrong with it, it just did not get
+// a slot today".
+const COMPARABLE_SCORE_STAGES = ['b', 'llm', 'selected'];
+
 // ---------------------------------------------------------------------------
 // 9. CATEGORIES — spec §18, verbatim
 // ---------------------------------------------------------------------------
@@ -1271,7 +1298,7 @@ const LLM_MUST_JUDGE = [
   'novelty',
   'wow_factor',
 ];
-  return { HARD_REJECT, CONFIG_DUMP_SIGNALS, PIRACY_PATTERNS, LANE_PRIORITY, LANES, IDLE_FORGIVENESS_NOTE, LANE_COVERAGE_NOTE, LANE_QUOTA, MULTI_LANE_BONUS, CURATED_LIST_PATTERNS, CURATED_LIST_TOPICS, QUALITY, CRAFT, README_BAND, ATTENTION_CURVES, ALIVENESS, MOMENTUM_NOTE, ADOPTION, RELEVANCE, IRAN_RELEVANCE, AI_BOOST, PROMPT_DUMP_SIGNALS, IRANIAN_CREATOR, PENALTIES, PENALTY_THRESHOLDS, LEARNING_PROJECT_PATTERNS, DEMO_MEDIA_PATTERNS, INSTALL_PATTERNS, FUNNEL, DIVERSITY, QUERY, QUERY_CLASSES, LANGUAGE_SHARDS, TOPIC_SHARDS, ROTATION, COOLDOWN, REJECT_PERMANENCE, CATEGORIES, LLM_MUST_JUDGE };
+  return { HARD_REJECT, CONFIG_DUMP_SIGNALS, PIRACY_PATTERNS, LANE_PRIORITY, LANES, IDLE_FORGIVENESS_NOTE, LANE_COVERAGE_NOTE, LANE_QUOTA, MULTI_LANE_BONUS, CURATED_LIST_PATTERNS, CURATED_LIST_TOPICS, QUALITY, CRAFT, README_BAND, ATTENTION_CURVES, ALIVENESS, MOMENTUM_NOTE, ADOPTION, RELEVANCE, IRAN_RELEVANCE, AI_BOOST, PROMPT_DUMP_SIGNALS, IRANIAN_CREATOR, PENALTIES, PENALTY_THRESHOLDS, LEARNING_PROJECT_PATTERNS, DEMO_MEDIA_PATTERNS, INSTALL_PATTERNS, FUNNEL, DIVERSITY, QUERY, QUERY_CLASSES, LANGUAGE_SHARDS, TOPIC_SHARDS, ROTATION, COOLDOWN, REJECT_PERMANENCE, COMPARABLE_SCORE_STAGES, CATEGORIES, LLM_MUST_JUDGE };
 })();
 
 // ===== algorithm.js ================================================
@@ -1866,7 +1893,15 @@ function outcomeOf(row) {
   if (reason) {
     return R.REJECT_PERMANENCE[reason] === 'permanent' ? 'permanentReject' : 'softReject';
   }
-  if (row.last_total != null && row.last_total < R.FUNNEL.minTotalForLlm) return 'nearMiss';
+  // nearMiss requires a score that is COMPARABLE to the threshold, which only a
+  // README-bearing stage is. See COMPARABLE_SCORE_STAGES for the measurement:
+  // stage-A scores run ~22 points low, so treating them as near-misses locks
+  // out hundreds of repos for 30 days, 42% of which would have cleared the gate.
+  if (row.last_total != null
+      && R.COMPARABLE_SCORE_STAGES.includes(row.last_stage)
+      && row.last_total < R.FUNNEL.minTotalForLlm) {
+    return 'nearMiss';
+  }
   if (row.evaluated_at) return 'notSelected';
   return 'notSelected';
 }
@@ -2127,6 +2162,15 @@ function validateRules() {
     if (kind !== 'permanent' && kind !== 'soft') {
       errs.push(`REJECT_PERMANENCE.${reason} must be "permanent" or "soft", got "${kind}"`);
     }
+  }
+  // Stage 'a' must never be treated as comparable to minTotalForLlm. Its scores
+  // run ~22 points low by construction (no README), so allowing it here would
+  // relabel hundreds of perfectly good candidates as nearMiss and lock them out
+  // for COOLDOWN.nearMiss days. See COMPARABLE_SCORE_STAGES for the numbers.
+  if (!Array.isArray(R.COMPARABLE_SCORE_STAGES) || !R.COMPARABLE_SCORE_STAGES.length) {
+    errs.push('COMPARABLE_SCORE_STAGES must be a non-empty array');
+  } else if (R.COMPARABLE_SCORE_STAGES.includes('a')) {
+    errs.push('COMPARABLE_SCORE_STAGES must not include stage "a" — metadata-only scores are not comparable to minTotalForLlm');
   }
   // The candidate pool must be at least the size of the final post set, or the
   // run cannot fill the channel even when every candidate is approved.
