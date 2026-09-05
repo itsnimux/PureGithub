@@ -1,0 +1,51 @@
+# Pure GitHub — infrastructure for step 1
+#
+# Only the database lives here. n8n keeps running as the existing standalone
+# container (n8n_data volume, SQLite); it is attached to puregh-net by
+# scripts/setup.sh so it can reach puregh-db by container name.
+
+name: puregh
+
+services:
+  db:
+    # pgvector image instead of plain postgres:16 — same Postgres 16, but the
+    # vector extension is already built in. Avoids an image migration later if
+    # the RAG phase happens.
+    image: pgvector/pgvector:pg16
+    container_name: puregh-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Deterministic collation so ORDER BY does not shift between locales.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: Asia/Tehran
+    ports:
+      # Loopback only. The DB must not be reachable from the local network.
+      - "127.0.0.1:${DB_HOST_PORT}:5432"
+    volumes:
+      - puregh_pgdata:/var/lib/postgresql/data
+      # Runs once on an empty data directory.
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    networks:
+      - puregh-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # This box has 2 cores / 7GB RAM and other containers running.
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+volumes:
+  puregh_pgdata:
+    name: puregh_pgdata
+
+networks:
+  puregh-net:
+    name: puregh-net

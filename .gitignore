@@ -1,0 +1,5 @@
+# Local secrets and state — never commit
+.env
+backups/
+*.dump
+*.sql.gz
