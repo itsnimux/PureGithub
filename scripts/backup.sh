@@ -26,8 +26,20 @@ docker cp "puregh-db:/tmp/db.dump" "$DEST/db-$STAMP.dump"
 docker exec puregh-db rm -f /tmp/db.dump
 
 echo "==> backing up n8n credential encryption key (config) -> $DEST/n8n-config-$STAMP"
-docker run --rm -v "${N8N_VOL}:/data:ro" alpine sh -c 'tar -C /data -cf - .n8n/config 2>/dev/null || true' > "$DEST/n8n-config-$STAMP.tar" \
-  || echo "   (config file not present; nothing to back up)"
+# The volume is mounted at /home/node/.n8n, so the volume root IS the .n8n
+# directory: the key lives at 'config', not '.n8n/config'. An earlier version
+# used the wrong path and, because the error was swallowed, produced empty
+# archives without complaining. Never make this failure silent again.
+docker run --rm -v "${N8N_VOL}:/data:ro" alpine tar -C /data -cf - config > "$DEST/n8n-config-$STAMP.tar"
+
+# An empty tar is 1024 bytes of padding and extracts without error, so size
+# alone proves nothing: verify the member is actually in there.
+if ! tar -tf "$DEST/n8n-config-$STAMP.tar" | grep -qx 'config'; then
+    echo "!! the encryption key was NOT captured. Refusing to report success." >&2
+    echo "   Check: docker run --rm -v ${N8N_VOL}:/data:ro alpine ls -la /data" >&2
+    exit 1
+fi
+echo "    encryption key captured ($(tar -tvf "$DEST/n8n-config-$STAMP.tar" | awk '{print $3}') bytes)"
 
 echo "==> done. Restore with: pg_restore -U ${POSTGRES_USER} -d ${DB_NAME} --clean <file>"
 echo "    Backups kept in: $DEST"

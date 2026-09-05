@@ -97,6 +97,39 @@ workflow ندارد.** همه‌ی پیش‌نیازهای workflow سوم آم�
 
 اشتباه گرفتن این دو یک‌بار وقت تلف کرد. در credential ن8n **هرگز** `127.0.0.1` نگذار.
 
+### ⚠️ باگ DNS کانتینر n8n — حل شد، ولی علتش را بدان (۲۰۲۶-۰۹-۰۵)
+علامت: هر نود شبکه‌ای n8n خطای `EAI_AGAIN` می‌داد (openrouter، github، telegram،
+حتی `ph.n8n.io` در لاگ خودش) **ولی `puregh-db` سالم بود**. همین تناقض گمراه‌کننده
+است — آدم فکر می‌کند مشکل مال یک provider خاص است.
+
+علت: داکر فایل `/etc/resolv.conf` کانتینر را **فقط یک‌بار، لحظه‌ی استارت** از
+resolv.conf هاست می‌سازد. سر بوت لپ‌تاپ، dockerd قبل از NetworkManager بالا آمد و
+هاست آن لحظه فقط nameserver لوکال داشت. پس resolver داخلی داکر (`127.0.0.11`)
+هیچ upstream نگرفت. لاگ dockerd صریح گفته بود:
+
+```
+warning "DNS resolver has no external nameservers" cid=f20df218...  ← همان cid کانتینر n8n
+```
+و داخل کانتینر: `# NO EXTERNAL NAMESERVERS DEFINED`.
+
+**چرا `puregh-db` سالم می‌ماند:** resolver داخلی اسم کانتینرها را خودش جواب
+می‌دهد و فقط بقیه را forward می‌کند. پس نبودن upstream را کاملاً پنهان می‌کند.
+
+**چرا `docker restart` کافی نیست:** مشکل را برای همان بوت حل می‌کند، ولی مسابقه
+سر بوت بعدی تکرار می‌شود. راه دائمی `--dns` است تا کانتینر به زمان‌بندی هاست
+وابسته نباشد: `scripts/recreate-n8n.sh` (با `1.1.1.1` و `8.8.8.8`، هر دو از داخل
+کانتینر تست شدند). آدرس روتر عمداً استفاده نشد چون با عوض شدن شبکه تغییر می‌کند.
+
+**چرا آن اسکریپت وجود دارد:** n8n داخل compose نیست، پس آرگومان‌های `docker run`
+اش هیچ‌جا ثبت نبود جز HostConfig خود کانتینر — با `docker rm` از بین می‌رفت.
+اسکریپت همان ثبت است. اگر روزی کانتینر را دستی ساختی، این چهار env یادت نرود،
+مخصوصاً دو تای آخر که بی آنها **MCP قطع می‌شود**: `TZ`، `GENERIC_TIMEZONE`،
+`N8N_MCP_ACCESS_ENABLED`، `N8N_MCP_MANAGED_BY_ENV`.
+
+`scripts/setup.sh` حالا **یک اسم خارجی را هم صریح تست می‌کند**، نه فقط
+`puregh-db` — چون همان‌طور که دیدیم رسیدن به DB هیچ چیزی درباره‌ی اینترنت ثابت
+نمی‌کند.
+
 ## ۴) فایل‌های پروژه
 
 ```
@@ -104,7 +137,8 @@ docker-compose.yml          فقط DB. n8n داخلش نیست.
 .env                        رمز DB (perm 600، در .gitignore)
 db/schema.sql               اسکیما، idempotent، در initdb اجرا می‌شود
 db/discovery-queries.sql    SQL قدم ۲ (cooldown، شباهت هدف، upsert، لاگ اجرا)
-scripts/setup.sh            بالا آوردن DB + اتصال n8n به شبکه
+scripts/setup.sh            بالا آوردن DB + اتصال n8n به شبکه + تست DNS
+scripts/recreate-n8n.sh     بازساخت کانتینر n8n با DNS ثابت (تنها ثبت آرگومان‌های run آن)
 scripts/backup.sh           بکاپ DB + کلید رمز credential های n8n
 workflows/*.ts              کد SDK هر سه workflow (منبع حقیقت)
 
@@ -133,8 +167,9 @@ discovery/regression.mjs    ۳۷ فیکسچر مرجع در ۴ گروه (بای�
 `import.meta.dirname` استفاده می‌کنند.
 
 پروژه تحت **گیت** است (شاخه `main`، هویت repo-local: `nimux <nimux@local>`).
-پنج کامیت: `9c3507f` قدم ۱، `d8ba600` علامت‌گذاری داده‌ی تست، `b52cfff` الگوریتم
-Discovery، `abe4a13` مستندسازی تغییر هدف، `49ccd90` پیش‌نیازهای workflow سوم.
+شش کامیت: `9c3507f` قدم ۱، `d8ba600` علامت‌گذاری داده‌ی تست، `b52cfff` الگوریتم
+Discovery، `abe4a13` مستندسازی تغییر هدف، `49ccd90` پیش‌نیازهای workflow سوم،
+`dafc7e7` ثبت هش کامیت پنجم.
 remote ندارد — هنوز جایی push نشده.
 بعد از هر تغییر workflow در n8n، فایل `.ts` را همگام کن و کامیت بزن.
 
@@ -224,6 +259,9 @@ remote ندارد — هنوز جایی push نشده.
 | `No data found from main input` | نودهای `ai_languageModel` سب‌نود هستند و main output ندارند → `.params.model.value` |
 | `Bad Request: chat not found` | بات ادمین کانال نبود. توکن سالم بود. |
 | `127.0.0.1:5433` در credential ن8n | از داخل کانتینر باید `puregh-db:5432` باشد |
+| `EAI_AGAIN` روی **هر** اسم خارجی (openrouter، github، telegram) — ولی `puregh-db` سالم | DNS خود کانتینر n8n upstream نداشت. §۳ «باگ DNS» را ببین. |
+| `Bad Request: chat_id is empty` در `Probe 4 - Identify Bot` | خودِ Channel Check است، نه باگ: «چت کنترل» را پر نکرده‌ای و Probe 4 بی‌قید اجرا می‌شود. |
+
 
 ## ۱۰) قالب Caption (نسخه فعلی — تأییدشده)
 
@@ -689,9 +727,18 @@ API نمی‌سوزاند. تست‌شده: ۱۰ درخواست raw و `core` د
 
 ## ۱۴) امنیت
 
-- کلید رمز credential های n8n داخل volume `n8n_data` فایل `config` است.
-  **اگر آن volume برود همه credential ها می‌روند.** `scripts/backup.sh` آن را هم می‌گیرد.
+- کلید رمز credential های n8n داخل volume `n8n_data` فایل `config` است
+  (در ریشه‌ی volume، **نه** `.n8n/config` — چون volume خودش روی
+  `/home/node/.n8n` مانت شده). **اگر آن volume برود همه credential ها می‌روند.**
+  `scripts/backup.sh` آن را هم می‌گیرد و حالا **تأیید می‌کند** که واقعاً گرفته.
+  قبلاً مسیر را غلط داده بود و خطا را با `2>/dev/null || true` می‌خورد، پس دو
+  بکاپ **کاملاً خالی** ساخته بود که موفق اعلام شدند (tar خالی ۱۰۲۴ بایت است و
+  بی‌خطا باز می‌شود، پس حجم فایل هیچ چیزی ثابت نمی‌کند). بکاپ
+  `n8n-config-20260905-121624.tar` به همین دلیل بی‌ارزش است.
 - پورت DB فقط روی `127.0.0.1` bind شده.
+- **پورت ۵۶۷۸ کانتینر n8n روی همه‌ی اینترفیس‌ها منتشر است** (همان‌طور که از قبل
+  بود). یعنی هر کسی در همان شبکه‌ی وای‌فای می‌تواند رابط n8n را باز کند. برای
+  محدود کردن به همین دستگاه: `N8N_BIND=127.0.0.1 ./scripts/recreate-n8n.sh`.
 - `.env` با perm 600 و در `.gitignore`.
 - workflow ها `active: false` هستند؛ فرم‌های ن8n به‌صورت عمومی expose نمی‌شوند
   چون publish نشده‌اند.

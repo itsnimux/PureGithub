@@ -43,6 +43,24 @@ docker exec "$N8N_CONTAINER" sh -c 'nc -z -w5 puregh-db 5432' \
     && echo "    puregh-db:5432 reachable from n8n" \
     || { echo "!! n8n cannot reach puregh-db" >&2; exit 1; }
 
+# Reaching puregh-db proves nothing about the internet: Docker's embedded
+# resolver answers container names itself and only forwards the rest. When
+# dockerd starts before NetworkManager has published a nameserver (a laptop boot
+# race, seen 2026-09-05), the container gets a resolver with no upstream: DB
+# lookups keep working while GitHub, Telegram and the LLM all fail with
+# EAI_AGAIN. Check an external name explicitly so that mismatch cannot hide.
+echo "==> verifying n8n can resolve external hosts"
+if docker exec "$N8N_CONTAINER" node -e '
+      require("dns").lookup("api.github.com", (e) => process.exit(e ? 1 : 0));
+   ' 2>/dev/null; then
+    echo "    external DNS works"
+else
+    echo "!! n8n cannot resolve external hostnames (container DNS has no upstream)." >&2
+    docker exec "$N8N_CONTAINER" grep -E 'ExtServers|NO EXTERNAL' /etc/resolv.conf >&2 || true
+    echo "   Fix it permanently with: ./scripts/recreate-n8n.sh" >&2
+    exit 1
+fi
+
 echo "==> schema check"
 # shellcheck disable=SC1091
 set -a; . ./.env; set +a
