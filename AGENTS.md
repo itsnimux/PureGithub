@@ -56,12 +56,53 @@ workflow ندارد.** همه‌ی پیش‌نیازهای workflow سوم آم�
 | dry run | `discovery/dryrun.mjs` | فانل ۱۱۴۶→۱۲۰→۱۶ روی داده‌ی زنده |
 
 قدم بعدی: **ساخت workflow سوم در n8n.** طرحش تأیید شده و پیش‌نیازهای فنی‌اش
-اندازه‌گیری شده (§۱۷). ساخت شروع نشده.
+اندازه‌گیری شده (§۱۷). **ساخت شروع شده — نود به نود ساخته و تست می‌شود.**
+
+### پیشرفت ساخت workflow سوم (۲۰۲۶-۰۹-۰۶)
+Workflow در n8n ساخته شد: **«Pure GitHub — Discovery»**، id=`hHSwbbOBKRIWStRU`
+(اسکلت با `create_workflow_from_code`، بقیه با `update_workflow`/`addNode` گام‌به‌گام).
+فایل منبع حقیقت: `workflows/puregh-discovery.ts` (نود Load Engine در آن
+`<BUNDLE_EMBEDDED_BY_SCRIPT>` دارد؛ باندل از `discovery/bundle.lean.js` به‌صورت
+JSON string تزریق می‌شود).
+
+| نود | وضعیت |
+|---|---|
+| 1. Daily Schedule | ✅ تست شد — شلیک می‌کند |
+| 2. Load Engine | ✅ تست شد — باندل ۵۱KB به‌صورت رشته بار می‌شود؛ بقیه با `new Function(eng + '; return PUREGH;')()` تزریق می‌کنند |
+| 3. Build Query Plan | ✅ تست شد — ۱۴ کوئری از `buildQueries` می‌سازد (هر آیتم حامل `seed` است) |
+| 4. Open Run Log | ✅ تست شد — در هر اجرا دقیقاً ۱ ردیف در `discovery_runs` |
+| 5. GitHub Search | ✅ تست زنده — ۱۴ درخواست واقعی، همه موفق (با retry و timeout) |
+| 6. Dedup and Collect | ✅ تست زنده — خروجی تکی {repos: ۸۹۲, idList, ثابت‌های rules} |
+
+گام بعدی: **بخش ۳** — Cooldown → Score Stage A → Allocate → Fetch README →
+Score Stage B → Select 16.
+
+#### باگ‌های بخش ۲ که یافت و رفع شدند (۲۰۲۶-۰۹-۰۷)
+| علامت | علت ریشه‌ای | رفع |
+|---|---|---|
+| `URL parameter must be a string, got undefined` (اجرا ۸۳) | GitHub Search به خروجی Open Run Log وصل بود (فقط `{id, started_at}`) به‌جای Build Query Plan | اتصال اصلاح شد: `Build Query Plan → GitHub Search` و `Build Query Plan → Open Run Log` (موازی) |
+| فقط ۵ کوئری ساخته می‌شد (اجرا ۸۷/۸۸) | باندل داخل Load Engine کهنه بود — نسخه‌ی قبل از `queriesPerRun: 14` | باندل تازه از `bundle.lean.js` به‌صورت JSON string در نود تزریق شد؛ هش آن با دیسک byte-identical تأیید شد |
+| `EAI_AGAIN` / `timeout of 30000ms exceeded` روی همان کوئری آخر (`curated`) (اجرا ۸۹/۹۰/۹۱) | ناپایداری موقت شبکه هنگام عوض شدن مسیر VPN — همان هشدار §۱۷؛ timeout ۳۰ ثانیه و تک‌تلاش کم بود | `timeout 60s` + `retryOnFail` + `maxTries 4` + `waitBetweenTries 1500` روی GitHub Search؛ اجرای ۹۲ بعد از فیکس همه‌ی ۱۴ درخواست موفق شد |
+
+نکته‌ی اجرا ۹۱: هنوز نسخه‌ی قدیمی (timeout 30) را اجرا می‌کرد، به همین دلیل فقط ۳ کوئری ساخت و از همان جا خطا نداد (خطا به دلیل باندل کهنه نبود). بعد از فیکس، اجرای ۹۲ کامل بود: ۱۴ کوئری، ۸۹۲ ریپوی یکتا، ثابت‌های rules درست (minQuality 55, minTotal 70, llmCandidate 16, readmeFetch 120, seed 249).
+
+#### اسکریپت تزریق باندل (`scripts/inject-bundle.mjs`)
+باندل داخل Code node نمی‌شود دستی تایپ کرد (۵۳KB، خروجی inline در MCP وسطش کوتاه می‌شود و JSON خراب می‌شود). این اسکریپت از `bundle.lean.js` جیسکد نود Load Engine را می‌سازد:
+- `node scripts/inject-bundle.mjs` → عملیات `update_workflow` را چاپ می‌کند.
+- `node scripts/inject-bundle.mjs --file=out.json` → عملیات را در فایل می‌گذارد تا کاربر در رابط n8n پیست کند.
+بعد از هر تغییر در `rules.js`/`algorithm.js`/`queries.js`: `node discovery/bundle.mjs --lean` بعد `node scripts/inject-bundle.mjs --file=...` و تزریق.
+
+⚠️ **باگ `executeOnce` در addNode:** اسکیمای عملیات `addNode` در MCP فیلد
+`executeOnce` را در آبجکت نود قبول نمی‌کند (سایلنت حذفش می‌کند). اگر نودی باید
+یک‌بار برای همه‌ی آیتم‌ها اجرا شود (مثل Postgres انبوه)، یا (الف) فقط **یک آیتم**
+ورودی بدهید، یا (ب) بعد از addNode با عملیات `setNodeSettings` مقدار
+`settings.executeOnce: true` را بگذارید. با گزینه‌ی (ب) تست شد و درست شد.
 
 ### دیتابیس الان خالی است (عمداً)
 داده‌ی تست دو بار پاک شد: یک‌بار ۲۰۲۶-۰۹-۰۵ (۶ ریپو + ۶ پست) و یک‌بار
 ۲۰۲۶-۰۹-۰۶ (۱ ریپو + ۴ پست، همه از تست‌های `imgcompress`). بکاپ‌ها:
 `backups/db-20260905-121624.dump` و `backups/db-20260906-010246-before-purge.dump`.
+ردیف‌های `discovery_runs` از تست‌های workflow هم بارها TRUNCATE شدند.
 
 آن داده یک درس داشت که همچنان معتبر است: `bat` (۶۰k★) و `fzf` (۸۲k★) با verdict
 `strong` وارد شده بودند، **چون هیچ فیلتری سر راهشان نبود**. الگوریتم قدم ۲
