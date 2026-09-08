@@ -135,15 +135,237 @@ const dedupAndCollect = node({
         'return [{ json: {',
         "  seed: $('Build Query Plan').first().json.seed,",
         '  repos, idList,',
-        '  llmRejectedDays: R.COOLDOWN.llmRejectedDays,',
-        '  nearMissDays: R.COOLDOWN.nearMissDays,',
-        '  notSelectedDays: R.COOLDOWN.notSelectedDays,',
-        '  softRejectDays: R.COOLDOWN.softRejectDays,',
-        '  minTotalForLlm: R.THRESHOLDS.minTotalForLlm,',
-        '  minQualityForLlm: R.THRESHOLDS.minQualityForLlm,',
-        '  readmeFetchLimit: R.THRESHOLDS.readmeFetchLimit,',
-        '  llmCandidateLimit: R.THRESHOLDS.llmCandidateLimit,',
+        '  llmRejectedDays: R.COOLDOWN.llmRejected,',
+        '  nearMissDays: R.COOLDOWN.nearMiss,',
+        '  notSelectedDays: R.COOLDOWN.notSelected,',
+        '  softRejectDays: R.COOLDOWN.softReject,',
+        '  minTotalForLlm: R.FUNNEL.minTotalForLlm,',
+        '  minQualityForLlm: R.FUNNEL.minQualityForLlm,',
+        '  readmeFetchLimit: R.FUNNEL.readmeFetchLimit,',
+        '  llmCandidateLimit: R.FUNNEL.llmCandidateLimit,',
         '} }];',
+      ].join('\n'),
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Cooldown Gate — query 1 of db/discovery-queries.sql. The gate decision is
+// resolved server-side (CASE) so the workflow branches on one column.
+// With an empty DB every row returns gate='new'; the interval comparisons
+// only matter once repositories has rows.
+// ---------------------------------------------------------------------------
+const cooldownGate = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.7,
+  config: {
+    name: 'Cooldown Gate',
+    parameters: {
+      operation: 'executeQuery',
+      query: [
+        'SELECT g.github_id,',
+        '       r.id                AS repo_id,',
+        '       r.published,',
+        '       r.human_rejected,',
+        '       r.verdict,',
+        '       r.last_total,',
+        '       r.last_stage,',
+        '       r.last_reject_reason,',
+        '       r.last_checked,',
+        '       r.times_seen,',
+        "       CASE",
+        "         WHEN r.id IS NULL                     THEN 'new'",
+        "         WHEN r.published                      THEN 'blocked-published'",
+        "         WHEN r.human_rejected                 THEN 'blocked-human-rejected'",
+        "         WHEN r.verdict = 'reject'",
+        "              AND r.last_checked > now() - ($2 || ' days')::interval",
+        "                                                THEN 'cooldown-llm-rejected'",
+        "         WHEN r.last_reject_reason IN ('archived','fork','template','disabled',",
+        "                                       'piracy','config-dump','oversized')",
+        "                                                THEN 'blocked-permanent'",
+        '         WHEN r.last_reject_reason IS NOT NULL',
+        "              AND r.last_checked > now() - ($5 || ' days')::interval",
+        "                                                THEN 'cooldown-soft-reject'",
+        '         WHEN r.last_total IS NOT NULL AND r.last_total < $6',
+        "              AND r.last_stage IN ('b','llm','selected')",
+        "              AND r.last_checked > now() - ($3 || ' days')::interval",
+        "                                                THEN 'cooldown-near-miss'",
+        "         WHEN r.last_checked > now() - ($4 || ' days')::interval",
+        "                                                THEN 'cooldown-not-selected'",
+        "         ELSE 'recheck'",
+        '       END AS gate',
+        '  FROM unnest($1::bigint[]) AS g(github_id)',
+        '  LEFT JOIN repositories r ON r.github_id = g.github_id;',
+      ].join('\n'),
+      options: {
+        queryReplacement: "{{ [$('Dedup and Collect').first().json.idList, $('Dedup and Collect').first().json.llmRejectedDays, $('Dedup and Collect').first().json.nearMissDays, $('Dedup and Collect').first().json.notSelectedDays, $('Dedup and Collect').first().json.softRejectDays, $('Dedup and Collect').first().json.minTotalForLlm] }}",
+        largeNumbersOutput: 'numbers',
+      },
+    },
+    credentials: { postgres: { name: 'Postgres account' } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Score Stage A — metadata-only scoring on every repo that passed the gate.
+// Repos blocked by cooldown are counted and dropped, not scored.
+// ---------------------------------------------------------------------------
+const scoreStageA = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Score Stage A',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: [
+        "const eng = $('Load Engine').first().json.bundle;",
+        "const PUREGH = new Function(eng + '; return PUREGH;')();",
+        '',
+        "const run = $('Dedup and Collect').first().json;",
+        'const gates = new Map();',
+        "for (const g of $('Cooldown Gate').all()) {",
+        '  gates.set(Number(g.json.github_id), g.json.gate);',
+        '}',
+        '',
+        'const now = Date.now();',
+        'const out = [];',
+        'const blocked = [];',
+        'for (const repo of run.repos) {',
+        "  const gate = gates.get(Number(repo.id)) ?? 'new';",
+        "  if (gate !== 'new' && gate !== 'recheck') {",
+        '    blocked.push({ id: repo.id, full_name: repo.full_name, gate });',
+        '    continue;',
+        '  }',
+        '  const scored = PUREGH.scoreStageA(repo, now);',
+        '  out.push({ json: { seed: run.seed, repo, gate, scored } });',
+        '}',
+        'return out;',
+      ].join('\n'),
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Allocate README Budget — per-lane split of the 120 README fetches.
+// IMPORTANT: passes the RAW repo (with created_at/pushed_at/default_branch),
+// NOT scored.repo — the normalized repo lacks those fields, and re-normalizing
+// it in Stage B would compute ageDays=1 and reject everything as no-lane.
+// ---------------------------------------------------------------------------
+const allocateReadmeBudget = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Allocate README Budget',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: [
+        "const eng = $('Load Engine').first().json.bundle;",
+        "const PUREGH = new Function(eng + '; return PUREGH;')();",
+        '',
+        "const run = $('Dedup and Collect').first().json;",
+        "const stageA = $('Score Stage A').all().map((it) => it.json);",
+        'const limit = run.readmeFetchLimit;',
+        'const chosen = PUREGH.allocateReadmeBudget(stageA.map((it) => it.scored), limit);',
+        '',
+        'const rawById = new Map(stageA.map((it) => [String(it.repo.id), it.repo]));',
+        'return chosen.map((scored) => {',
+        '  const raw = rawById.get(String(scored.repo.id)) ?? {};',
+        '  return { json: { seed: run.seed, repo: raw, scored } };',
+        '});',
+      ].join('\n'),
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Fetch READMEs — raw.githubusercontent, no credential, no API quota.
+// batchSize 20 (parallel batches) + 15s timeout: sequential fetching with
+// 800ms spacing made this node run 5+ minutes and hit the old 30s timeouts.
+// A 404 (no README.md) must not kill the run: onError=continueRegularOutput
+// and alwaysOutputData=false are set via setNodeSettings. Failed items come
+// back as short/error bodies and Stage B scores them out as no-readme.
+// ---------------------------------------------------------------------------
+const fetchReadmes = node({
+  type: 'n8n-nodes-base.httpRequest',
+  version: 4.5,
+  config: {
+    name: 'Fetch READMEs',
+    parameters: {
+      url: "={{ 'https://raw.githubusercontent.com/' + $json.repo.full_name + '/' + $json.repo.default_branch + '/README.md' }}",
+      method: 'GET',
+      authentication: 'none',
+      sendHeaders: false,
+      sendBody: false,
+      options: {
+        batching: { batch: { batchSize: 20, batchInterval: 300 } },
+        response: { responseFormat: 'text' },
+        timeout: 15000,
+      },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Score Stage B — README scoring. Response items pair with allocated items
+// by index; the raw README text arrives as json.data (responseFormat: 'text').
+// ---------------------------------------------------------------------------
+const scoreStageB = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Score Stage B',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: [
+        "const eng = $('Load Engine').first().json.bundle;",
+        "const PUREGH = new Function(eng + '; return PUREGH;')();",
+        '',
+        "const run = $('Dedup and Collect').first().json;",
+        "const allocated = $('Allocate README Budget').all().map((it) => it.json);",
+        "const fetched = $('Fetch READMEs').all();",
+        'const now = Date.now();',
+        '',
+        'const out = [];',
+        'for (let i = 0; i < fetched.length; i++) {',
+        '  const alloc = allocated[i];',
+        '  const raw = fetched[i].json ?? {};',
+        "  const readme = String(raw.data ?? raw ?? '');",
+        '  const scored = PUREGH.scoreStageB(alloc.repo, readme, now);',
+        '  out.push({ json: { seed: run.seed, repo: alloc.repo, readme, scored } });',
+        '}',
+        'return out;',
+      ].join('\n'),
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Select 16 — per-lane LLM candidate set with diversity caps.
+// Outputs the RAW repo and its README next to `scored` so the LLM prompt and
+// the upsert node have complete metadata (full_name, created_at, ...).
+// ---------------------------------------------------------------------------
+const select16 = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Select 16',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: [
+        "const eng = $('Load Engine').first().json.bundle;",
+        "const PUREGH = new Function(eng + '; return PUREGH;')();",
+        '',
+        "const run = $('Dedup and Collect').first().json;",
+        "const stageBItems = $('Score Stage B').all().map((it) => it.json);",
+        'const stageB = stageBItems.map((it) => it.scored);',
+        'const limit = run.llmCandidateLimit;',
+        'const res = PUREGH.select(stageB, limit);',
+        '',
+        'const rawById = new Map(stageBItems.map((it) => [String(it.repo.id), it]));',
+        'return res.chosen.map((scored) => {',
+        '  const src = rawById.get(String(scored.repo.id));',
+        "  return { json: { seed: run.seed, repo: src?.repo ?? scored.repo, readme: src?.readme ?? '', scored } };",
+        '});',
       ].join('\n'),
     },
   },
@@ -162,4 +384,10 @@ export default workflow('puregh-discovery', 'Pure GitHub — Discovery')
   .to(buildQueryPlan)
   .to(openRunLog)
   .to(githubSearch)
-  .to(dedupAndCollect);
+  .to(dedupAndCollect)
+  .to(cooldownGate)
+  .to(scoreStageA)
+  .to(allocateReadmeBudget)
+  .to(fetchReadmes)
+  .to(scoreStageB)
+  .to(select16);

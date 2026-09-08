@@ -73,9 +73,34 @@ JSON string تزریق می‌شود).
 | 4. Open Run Log | ✅ تست شد — در هر اجرا دقیقاً ۱ ردیف در `discovery_runs` |
 | 5. GitHub Search | ✅ تست زنده — ۱۴ درخواست واقعی، همه موفق (با retry و timeout) |
 | 6. Dedup and Collect | ✅ تست زنده — خروجی تکی {repos: ۸۹۲, idList, ثابت‌های rules} |
+| 7. Cooldown Gate | ✅ تست شد — کوئری ۱ روی ۹۰۳ آیتم؛ با DB خالی همه gate='new' |
+| 8. Score Stage A | ✅ تست شد — امتیاز متادیتا + عبور از gate |
+| 9. Allocate README Budget | ✅ تست شد — ۱۲۰ ریپو با per-lane؛ خروجی ریپوی خام |
+| 10. Fetch READMEs | ✅ تست زنده — ۱۲۰ درخواست موازی (batch 20)، ~۱۰ ثانیه |
+| 11. Score Stage B | ✅ تست زنده — README از `json.data`؛ امتیاز کامل با لِین‌ها |
+| 12. Select 16 | ✅ تست زنده — ۱۶ کاندیدا، توزیع لِین درست، خروجی repo+readme+scored |
 
-گام بعدی: **بخش ۳** — Cooldown → Score Stage A → Allocate → Fetch README →
-Score Stage B → Select 16.
+گام بعدی: **بخش ۴** — Purpose Similarity → Loop 16 (Generate Caption → Assemble)
+→ Select Final → Upsert + Save Drafts → Wait (فرم بازبینی) → Publish → Close Run Log.
+
+#### باگ‌های بخش ۳ که یافت و رفع شدند (۲۰۲۶-۰۹-۰۸)
+| علامت | علت ریشه‌ای | رفع |
+|---|---|---|
+| `raw.githubusercontent.com/undefined/undefined/README.md` (اجرا ۹۶) | Allocate خروجی‌اش `scored.repo` بود — نرمال‌شده، بدون `full_name`/`default_branch` (normalize اینها را نگه نمی‌دارد) | Allocate حالا ریپوی خام را از Stage A برمی‌گرداند |
+| Fetch READMEs ~۵ دقیقه معلق، سپس تایم‌اوت (اجرا ۹۷/۹۸) | ۱۲۰ درخواست **ترتیبی** با batchInterval 800 + timeout 30s روی شبکه VPN | batchSize 20 (موازی) + batchInterval 300 + timeout 15s؛ اجرا از ۵ دقیقه به ~۱۰ ثانیه رسید |
+| همه ریپوها `no-readme` (اجرا ۱۰۰/۱۰۱) | خروجی httpRequest با `responseFormat: 'text'` زیر کلید **`data`** است؛ `String($json)` = `"[object Object]"` < 300 بایت | Score Stage B حالا `fetched[i].json.data` می‌خواند |
+| همه ریپوها `no-lane`، Select 16 خالی (اجرا ۱۰۲) | Allocate ریپوی نرمال‌شده را به Stage B می‌داد؛ آن آبجکت `created_at`/`pushed_at` ندارد → دوباره normalize → سن = ۱ روز → همه لِین‌های minAgeDays رد | همان فیکس اول: Allocate ریپوی خام پاس می‌دهد (created_at سالم) |
+| `there is no parameter $5` (اجرا ۱۰۳) | `R.COOLDOWN.llmRejectedDays` ناموجود — کلیدها پسوند `Days` ندارند؛ `R.THRESHOLDS` هم ناموجود است (نام درست `FUNNEL`). با DB خالی بی‌صدا null می‌شد و cooldown ها هرگز فعال نمی‌شدند | کلیدهای درست: `R.COOLDOWN.llmRejected` و `R.FUNNEL.minTotalForLlm` |
+
+اجرای ۱۰۵ (پس از همه‌ی فیکس‌ها): **موفق در ۷۴ ثانیه** — ۱۶ کاندیدا با توزیع
+لِین: ایران ۷ / AI ۳ / hidden_gem ۳ / ترند ۲ / فهرست ۱. همه با full_name و README کامل.
+کاندیدای‌ها با مأموریت کانال منطبق‌اند (s-ui، Hiddify-Manager، 3x-ui، agentscope، deer-flow، wizmap).
+
+نکته‌ی معماری برای نودهای Code این workflow: **همیشه ریپوی خام را پاس بده، نه
+`scored.repo` را.** `normalize()` خروجی‌اش `ageDays`/`daysSincePush` دارد نه
+`created_at`/`pushed_at`؛ هر بار normalize دوباره روی آبجکت نرمال‌شده سن را ۱ روز
+می‌کند و همه‌ی لِین‌ها را می‌کشد. Select 16 هم برای همین ریپوی خام + README را
+کنار scored برمی‌گرداند (LLM و upsert به هر سه نیاز دارند).
 
 #### باگ‌های بخش ۲ که یافت و رفع شدند (۲۰۲۶-۰۹-۰۷)
 | علامت | علت ریشه‌ای | رفع |

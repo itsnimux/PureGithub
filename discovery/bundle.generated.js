@@ -1401,6 +1401,7 @@ function normalize(raw, now = Date.now()) {
     language: raw.language ?? null,
     topics: Array.isArray(raw.topics) ? raw.topics.map((t) => String(t).toLowerCase()) : [],
     license: raw.license?.spdx_id ?? raw.license ?? raw.license_spdx ?? null,
+    defaultBranch: raw.default_branch ?? null,
     sizeKb: num(raw.size_kb ?? raw.size),
     archived: !!(raw.archived ?? raw.is_archived),
     fork: !!(raw.fork ?? raw.is_fork),
