@@ -83,6 +83,48 @@ JSON string تزریق می‌شود).
 گام بعدی: **بخش ۴** — Purpose Similarity → Loop 16 (Generate Caption → Assemble)
 → Select Final → Upsert + Save (زمان انتشار رندوم) → ارسال به ربات با ۴ دکمه‌ی اینلاین.
 
+### ✅ بخش ۴ ساخته و end-to-end تست شد (۲۰۲۶-۰۹-۰۹)
+اجرا ۱۲۰ موفق: s-ui کشف شد، LLM واقعی (z-ai/glm-5.3-flash-free از orcarouter)
+کپشن ساخت، ردیف draft با publish_at ذخیره شد، پیام ربات با ۴ دکمه فرستاده شد
+(bot_message_id=22)، run log بسته شد. داده‌ی تست بعدش پاک شد (DB صفر).
+
+نودهای جدید بخش ۴ (زنجیره بعد از Select 16):
+`Purpose Similarity → Build LLM Facts → Loop Repos (batch 1)` با بدنه‌ی
+`Generate Caption → Assemble Caption → Store Judgment → Wait 3 Minutes → Loop`
+و پس از done: `Collect Judgments → Build Persist Payload → Upsert Repos →
+Save Posts Payload → Save Final Posts → Join Posts To Sends → Loop Bot Sends`
+با بدنه‌ی `Send to Bot → Save Bot Message → Loop` و در done آن `Close Run Log`.
+
+| مفهوم | پیاده‌سازی |
+|---|---|
+| حافظه‌ی حلقه | `$getWorkflowStaticData('global').judged` — Store Judgment داخل حلقه append می‌کند؛ Build Query Plan در شروع هر اجرا null می‌کند (اجرای خراب اجرای بعدی را مسموم نکند) |
+| انتخاب نهایی | `Collect Judgments` بعد از حلقه: `selectFinal()` روی همه‌ی ۱۶ قضاوت + زمان انتشار پخش ۲ ساعته از فردا ۹ص تهران (UTC+3:30، بدون DST) |
+| verdict انتخاب‌نشده‌ها | فقط reject واقعی LLM یا duplicate-purpose → verdict='reject' + last_stage='llm' (cooldown ۳۶۵ روز)؛ بقیه verdict=NULL + last_stage='selected' (notSelected = ۳ روز) — هرگز status='rejected' در posts |
+| upsert | یک آیتم به ازای هر ریپو با آرایه‌ی ۳۳پارامتری (کوئری ۳ discovery-queries.sql)؛ نود Postgres به ازای هر آیتم اجرا می‌شود |
+| posts | INSERT انبوه با `jsonb_to_recordset` + JOIN روی github_id (نیازی به نگاشت id نیست)؛ executeOnce با setNodeSettings |
+| ربات | هر پست جداگانه (Loop Bot Sends) با کپشن + زمان انتشار + ۴ دکمه (ok/rej/regen/manual + post_id)؛ Save Bot Message پیام را به ردیف وصل می‌کند |
+
+#### باگ‌های بخش ۴ که یافت و رفع شدند (۲۰۲۶-۰۹-۰۹)
+| علامت | علت ریشه‌ای | رفع |
+|---|---|---|
+| حلقه بی‌نهایت در تست pin (اجرا ۱۱۵: ۷۵ تکرار Loop Repos) | **نود pin شده را در حلقه قرار نده** — pin خروجی ثابت می‌دهد و splitInBatches هرگز به done نمی‌رسد | تست ساختاری حلقه را با pin نزن؛ تست زنده با Limit Test=1 بزن |
+| «judged خالی» بلافاصله بعد از شروع حلقه (اجرا ۱۱۶-۱۱۹) | **SplitInBatches v3: خروجی 0=done، خروجی 1=loop** (تأیید از سورس نود + previousNodeOutput در دیتای اجرا). هر دو حلقه برعکس وصل بودند: بدنه‌ی حلقه روی done و مرحله‌ی پس از حلقه روی loop. همین علت خطای اجرای ۱۱۰ (Close Run Log زودهنگام) بود | بدنه روی خروجی 1، ادامه‌ی زنجیره روی خروجی 0 — در هر دو حلقه |
+| «Node 'Collect Judgments' hasn't been executed» در Close Run Log (اجرا ۱۱۶) | Close Run Log هنوز از Loop Repos[done] قدیمی هم ورودی می‌گرفت و زودتر از Collect Judgments اجرا می‌شد | حذف اتصال قدیمی؛ تنها ورودی = done حلقه Loop Bot Sends |
+| post_id در Save Bot Message پیدا نمی‌شد | `$json` این نود پاسخ تلگرام است ({ok, result}) — post_id ندارد | از `$('Join Posts To Sends').item.json.post_id` (paired item) خوانده شود |
+| found_by همیشه NULL | خروجی GitHub Search پاسخ خام API است؛ label ندارد | Dedup از `pairedItem.item` اندیس آیتم کوئری را می‌گیرد و label را از Build Query Plan می‌خواند |
+| هشدار DUPLICATE_SUBNODE_CONNECTION روی Generate Caption | با needsFallback=true نود chainLlm ورودی **دوم** مدل دارد؛ هر دو مدل به ورودی 0 وصل بودند | AI Model - Fallback به ai_languageModel ورودی index=1 |
+
+**نکته‌ی SDK برای فایل‌های .ts:** حلقه در کد SDK باید با helper
+`splitInBatches()` تعریف شود نه `node()` — متدهای `.onDone()/.onEachBatch()`
+فقط روی خروجی آن helper معتبرند. `validate_workflow` ساخت jsCode با
+`.join('\n')` را رد می‌کند (Method 'join' is not allowed) — فایل‌های .ts این
+پروژه با آن الگو نوشته شده‌اند و parse نودها را نمی‌گذرند؛ wiring جداگانه با
+نسخه‌ی ساده‌شده اعتبارسنجی شود و سینتکس با esbuild چک شود.
+
+**نکته‌ی Test workflow:** نودهای داخل حلقه را pin نکن (بالا). Wait واقعی
+منتظر می‌ماند و timeout تست را می‌خورَد — برای تست، Wait را موقتاً کم کن
+یا disable کن و بعد برگردان.
+
 ### ⚠️ طرح بازبینی عوض شد — فرم n8n حذف، جایش ربات تلگرام (۲۰۲۶-۰۹-۰۸)
 کاربر صریح گفت فرم بازبینی n8n لازم نیست. طرح جدید:
 - هر پست ساخته‌شده به **چت خصوصی ربات** ارسال می‌شود (chat id `5622960785`)
