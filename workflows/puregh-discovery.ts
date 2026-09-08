@@ -1,5 +1,5 @@
 import {
-  workflow, trigger, sticky, node,
+  workflow, trigger, sticky, node, nextBatch, outputParser, splitInBatches,
 } from '@n8n/workflow-sdk';
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,8 @@ const loadEngine = node({
 
 // ---------------------------------------------------------------------------
 // Build Query Plan — deterministic set of 14 GitHub search queries for today.
+// Also RESETS the loop accumulator ($getWorkflowStaticData('global').judged):
+// a run that died mid-loop must not poison the next one with stale judgments.
 // ---------------------------------------------------------------------------
 const buildQueryPlan = node({
   type: 'n8n-nodes-base.code',
@@ -43,6 +45,9 @@ const buildQueryPlan = node({
     parameters: {
       mode: 'runOnceForAllItems',
       jsCode: [
+        "const sd = $getWorkflowStaticData('global');",
+        'sd.judged = null;',
+        '',
         "const eng = $('Load Engine').first().json.bundle;",
         "const PUREGH = new Function(eng + '; return PUREGH;')();",
         'const seed = PUREGH.dayIndex(Date.now());',
@@ -106,6 +111,9 @@ const githubSearch = node({
 // ---------------------------------------------------------------------------
 // Dedup and Collect — collapse all search items by id into one normalized
 // repos array plus the run's constants. Run once for all items.
+// found_by comes from pairedItem: the GitHub Search node emits the raw API
+// response (no label), but each result's pairedItem points back to its
+// query item in Build Query Plan, which carries the label.
 // ---------------------------------------------------------------------------
 const dedupAndCollect = node({
   type: 'n8n-nodes-base.code',
@@ -118,8 +126,21 @@ const dedupAndCollect = node({
         "const eng = $('Load Engine').first().json.bundle;",
         "const PUREGH = new Function(eng + '; return PUREGH;')();",
         'const byId = new Map();',
-        "for (const it of $('GitHub Search').all()) {",
-        '  for (const r of (it.json?.items || [])) byId.set(r.id, r);',
+        'const foundBy = new Map();',
+        "const plan = $('Build Query Plan').all().map((it) => it.json);",
+        "const searchRuns = $('GitHub Search').all();",
+        'for (let i = 0; i < searchRuns.length; i++) {',
+        '  const it = searchRuns[i];',
+        '  let label = null;',
+        '  try {',
+        '    const p = it.pairedItem;',
+        "    const idx = typeof p?.item === 'number' ? p.item : (Array.isArray(p) ? p[0]?.item : 0);",
+        '    label = plan[idx]?.label ?? plan[idx]?.q ?? null;',
+        '  } catch (e) { label = null; }',
+        '  for (const r of (it.json?.items || [])) {',
+        '    byId.set(r.id, r);',
+        '    if (label) foundBy.set(r.id, label);',
+        '  }',
         '}',
         'const repos = [...byId.values()].map(r => ({',
         '  id: r.id, full_name: r.full_name, name: r.name, owner: r.owner?.login,',
@@ -129,6 +150,7 @@ const dedupAndCollect = node({
         '  size: r.size, archived: !!r.archived, fork: !!r.fork,',
         '  is_template: !!r.is_template, disabled: !!r.disabled,',
         '  created_at: r.created_at, pushed_at: r.pushed_at, default_branch: r.default_branch,',
+        '  found_by: foundBy.get(r.id) ?? null,',
         '}));',
         'const R = PUREGH.rules;',
         "const idList = '{' + repos.map(r => r.id).join(',') + '}';",
@@ -143,6 +165,11 @@ const dedupAndCollect = node({
         '  minQualityForLlm: R.FUNNEL.minQualityForLlm,',
         '  readmeFetchLimit: R.FUNNEL.readmeFetchLimit,',
         '  llmCandidateLimit: R.FUNNEL.llmCandidateLimit,',
+        '  finalSelectionSize: R.FUNNEL.finalSelectionSize,',
+        '  purposeDescThreshold: R.FUNNEL.purposeSimilarityThreshold,',
+        '  purposeTopicJaccardThreshold: R.FUNNEL.purposeTopicJaccardThreshold,',
+        '  purposeMinSharedTopics: R.FUNNEL.purposeMinSharedTopics,',
+        '  purposeCompareLimit: R.FUNNEL.purposeCompareLimit,',
         '} }];',
       ].join('\n'),
     },
@@ -371,8 +398,771 @@ const select16 = node({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Purpose Similarity — query 2 of db/discovery-queries.sql. Two independent
+// signals (description trigram, topic Jaccard); either is sufficient to flag.
+// The LLM — not this query — decides whether the candidate differentiates.
+// ---------------------------------------------------------------------------
+const purposeSimilarity = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.7,
+  config: {
+    name: 'Purpose Similarity',
+    parameters: {
+      operation: 'executeQuery',
+      query: [
+        'WITH cand AS (',
+        '  SELECT $7::bigint AS gh_id,',
+        '         $1::text AS descr,',
+        '         ARRAY(SELECT lower(jsonb_array_elements_text($2::jsonb))) AS topics',
+        '),',
+        'pub AS (',
+        '  SELECT r.github_id, r.full_name, r.url, r.description, r.stars,',
+        '         ARRAY(SELECT lower(jsonb_array_elements_text(r.topics))) AS topics',
+        '    FROM repositories r',
+        '   WHERE r.published = TRUE',
+        '     AND r.github_id <> $7::bigint',
+        '),',
+        'scored AS (',
+        '  SELECT c.gh_id, p.full_name, p.url, p.stars, p.description,',
+        '         similarity(c.descr, p.description) AS desc_sim,',
+        '         cardinality(ARRAY(SELECT unnest(c.topics) INTERSECT SELECT unnest(p.topics))) AS shared,',
+        '         cardinality(ARRAY(SELECT unnest(c.topics) INTERSECT SELECT unnest(p.topics)))::numeric',
+        '           / GREATEST(1, cardinality(ARRAY(SELECT unnest(c.topics) UNION SELECT unnest(p.topics)))) AS jaccard',
+        '    FROM pub p CROSS JOIN cand c',
+        '),',
+        'matched AS (',
+        '  SELECT gh_id, full_name, url, stars, description,',
+        '         round(desc_sim::numeric, 3) AS desc_sim,',
+        '         shared,',
+        '         round(jaccard, 3) AS jaccard,',
+        "         CASE WHEN shared >= $5::int AND jaccard >= $4::numeric THEN 'topics'",
+        "              WHEN desc_sim >= $3::numeric                      THEN 'description'",
+        '         END AS matched_by',
+        '    FROM scored',
+        '   WHERE (shared >= $5::int AND jaccard >= $4::numeric)',
+        '      OR desc_sim >= $3::numeric',
+        '   ORDER BY jaccard DESC, desc_sim DESC',
+        '   LIMIT $6::int',
+        ')',
+        'SELECT m.gh_id, m.full_name, m.url, m.stars, m.description,',
+        '       m.desc_sim, m.shared, m.jaccard, m.matched_by',
+        '  FROM matched m',
+        'UNION ALL',
+        'SELECT $7::bigint, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL',
+        ' WHERE NOT EXISTS (SELECT 1 FROM matched)',
+      ].join('\n'),
+      options: {
+        queryReplacement: [
+        '={{ [',
+        "  $json.repo.description ?? '',",
+        "  JSON.stringify($json.repo.topics ?? []),",
+        "  $('Dedup and Collect').first().json.purposeDescThreshold,",
+        "  $('Dedup and Collect').first().json.purposeTopicJaccardThreshold,",
+        "  $('Dedup and Collect').first().json.purposeMinSharedTopics,",
+        "  $('Dedup and Collect').first().json.purposeCompareLimit,",
+        '  Number($json.repo.id),',
+        '] }}',
+      ].join('\n'),
+        largeNumbersOutput: 'numbers',
+      },
+    },
+    credentials: { postgres: { name: 'Postgres account' } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Build LLM Facts — the LLM's whole world for one candidate: metadata facts
+// + README excerpt + similar published posts (for differentiation). The LLM
+// never sees numbers it could copy into the caption; Assemble injects those.
+// ---------------------------------------------------------------------------
+const buildLlmFacts = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Build LLM Facts',
+    parameters: {
+      mode: 'runOnceForEachItem',
+      jsCode: [
+        '// runOnceForEachItem: $json here is the Purpose Similarity row for THIS candidate.',
+        'const sim = $json;',
+        "const candidates = $('Select 16').all().map((it) => it.json);",
+        'const repo = candidates.find((c) => Number(c.repo.id) === Number(sim.gh_id));',
+        "if (!repo) throw new Error('no Select 16 candidate matches gh_id ' + sim.gh_id);",
+        "const readmeRaw = String(repo.readme ?? '');",
+        'const NL = String.fromCharCode(10);',
+        'const now = Date.now();',
+        'const created = new Date(repo.repo.created_at ?? now).getTime();',
+        'const pushed = new Date(repo.repo.pushed_at ?? now).getTime();',
+        'const ageDays = Math.max(1, (now - created) / 86400000);',
+        'const daysSincePush = Math.max(0, Math.round((now - pushed) / 86400000));',
+        'const stars = Number(repo.repo.stars ?? 0);',
+        'const hasDemo = /\\.(gif|mp4|webm)|asciinema|youtube\\.com|youtu\\.be|demo|screenshot|preview/i.test(readmeRaw);',
+        'const cleaned = readmeRaw',
+        "  .replace(/<[^>]*>/g, ' ')",
+        "  .replace(/!\\[[^\\]]*\\]\\([^)]*\\)/g, ' ')",
+        "  .replace(/\\[([^\\]]*)\\]\\([^)]*\\)/g, '$1')",
+        "  .replace(/```[\\s\\S]*?```/g, ' ')",
+        "  .replace(/[ \\t]+/g, ' ')",
+        '  .trim();',
+        'const excerpt = cleaned.slice(0, 3000);',
+        'const topics = Array.isArray(repo.repo.topics) ? repo.repo.topics : [];',
+        "const similarRows = $('Purpose Similarity').all()",
+        '  .map((it) => it.json)',
+        '  .filter((s) => Number(s.gh_id) === Number(sim.gh_id) && s.full_name);',
+        'const facts = [',
+        "  'repository=' + (repo.repo.full_name ?? ''),",
+        "  'description=' + (repo.repo.description ?? '-'),",
+        "  'homepage=' + (repo.repo.homepage || '-'),",
+        "  'topics=' + (topics.join(', ') || '-'),",
+        "  'language=' + (repo.repo.language ?? 'unknown'),",
+        '  \'stars=\' + stars,',
+        "  'forks=' + (repo.repo.forks ?? 0),",
+        "  'open_issues=' + (repo.repo.open_issues ?? 0),",
+        '  \'age_days=\' + Math.round(ageDays),',
+        '  \'days_since_last_push=\' + daysSincePush,',
+        "  'star_velocity_per_day=' + (stars / ageDays).toFixed(2),",
+        '  \'has_demo=\' + hasDemo,',
+        "  'license=' + (repo.repo.license ?? 'none'),",
+        '  \'\',',
+        '  \'README (truncated):\',',
+        '  excerpt,',
+        '];',
+        'if (similarRows.length) {',
+        "  facts.push('', 'پست‌های مشابه قبلاً منتشر شده (برای تمایز):');",
+        '  for (const s of similarRows) {',
+        "    facts.push('- ' + (s.full_name ?? '') + ' (' + (s.stars ?? 0) + '★, مشابهت: ' + (s.matched_by ?? '') + ') — ' + (s.description ?? ''));",
+        '  }',
+        '}',
+        'return { json: {',
+        '  facts: facts.join(NL),',
+        '  stars, language: repo.repo.language ?? \'unknown\',',
+        "  license_spdx: repo.repo.license ?? 'none',",
+        '  full_name: repo.repo.full_name, repo_id: repo.repo.id, owner: repo.repo.owner,',
+        '} };',
+      ].join('\n'),
+    },
+  },
+});
+
+const aiModelPrimary = node({
+  type: '@n8n/n8n-nodes-langchain.lmChatOpenAi',
+  version: 1.3,
+  config: {
+    name: 'AI Model - Primary',
+    parameters: {
+      model: { __rl: true, value: 'z-ai/glm-5.3-flash-free', mode: 'list', cachedResultName: 'z-ai/glm-5.3-flash-free' },
+      responsesApiEnabled: false,
+      options: { maxTokens: 2000, temperature: 0.6, timeout: 180000, maxRetries: 2 },
+    },
+    credentials: { openAiApi: { name: 'orcarouter' } },
+  },
+});
+
+const aiModelFallback = node({
+  type: '@n8n/n8n-nodes-langchain.lmChatOpenAi',
+  version: 1.3,
+  config: {
+    name: 'AI Model - Fallback',
+    parameters: {
+      model: { __rl: true, value: 'nvidia/nemotron-3.5-lightning:free', mode: 'list', cachedResultName: 'nvidia/nemotron-3.5-lightning:free' },
+      responsesApiEnabled: false,
+      options: { maxTokens: 2000, temperature: 0.6, timeout: 180000, maxRetries: 2 },
+    },
+    credentials: { openAiApi: { name: 'openrouter' } },
+  },
+});
+
+const captionSchema = outputParser({
+  type: '@n8n/n8n-nodes-langchain.outputParserStructured',
+  version: 1.3,
+  config: {
+    name: 'Caption Schema',
+    parameters: {
+      schemaType: 'fromJson',
+      jsonSchemaExample: '{"verdict":"strong","reason":"short reason","title":"Name - few words","hook":"one friendly sentence","why_interesting":"one or two sentences","audience":["freelancers"],"category":"developer-tools"}',
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Generate Caption — one repo per call (loop feeds it a single item). The
+// prompt is the channel's taste + tone rules + length caps (AGENTS.md §10).
+// ---------------------------------------------------------------------------
+const generateCaption = node({
+  type: '@n8n/n8n-nodes-langchain.chainLlm',
+  version: 1.9,
+  config: {
+    name: 'Generate Caption',
+    parameters: {
+      promptType: 'define',
+      text: '={{ $json.facts }}',
+      hasOutputParser: true,
+      needsFallback: true,
+      messages: {
+        messageValues: [
+          {
+            message: 'تو کارگردان کانال تلگرام «Pure GitHub» هستی که پروژه\u200cهای منبع\u200cباز جالب را معرفی می\u200cکند.\n\nسلیقه کانال:\n- پروژه\u200cهای کاربردی، غیرمعمول و خلاقانه را دوست داریم.\n- فورک ساده، boilerplate، CRUD عمومی و ابزارهای AI کم\u200cکیفیت را نمی\u200cپسندیم.\n- واو فاکتور مهم است.\n\n### لحن (مهم\u200cترین قاعده)\nطوری بنویس که انگار داری برای دوست صمیمی\u200cت که برنامه\u200cنویس است از یک پروژه تعریف می\u200cکنی. فارسی روان و خودمانی، نه لحن رسمی و نه لحن تبلیغاتی.\n\nبله: «رو می\u200cگیره»،  «می\u200cتونی»، «خودت»، «بدون اینکه ...»\nنه: «می\u200cباشد»، «جهت استفاده»، «راهکاری جامع»، «بی\u200cنقص»، «انقلابی»\n\nقواعد دیگر:\n- شعار و جملات انگلیسی README را هرگز کلمه\u200cبه\u200cکلمه ترجمه نکن. مفهوم را بفهم و از نو بنویس.\n- از ترجمه تحت\u200cاللفظی استعاره\u200cها پرهیز کن (مانند «with wings» یا «hear every voice»).\n- نام پروژه، نام تکنولوژی\u200cها و اصطلاحات فنی جاافتاده (API، CLI، Docker، IndexedDB) را انگلیسی نگه دار.\n- فقط بر اساس داده\u200cای که دریافت می\u200cکنی بنویس. عدد یا قابلیتی که در داده نیست از خودت اضافه نکن.\n- هیچ عددی (ستاره، زبان، لایسنس) در متن ننویس؛ خودمان جداگانه اضافه می\u200cکنیم.\n- اگر فهرست «پست\u200cهای مشابه قبلاً منتشر شده» در داده هست، فقط وقتی پست را تایید می\u200cکنی که این پروژه با آنها تمایز واقعی داشته باشد؛ در غیر این صورت verdict را reject بگذار و در reason بنویس تکراری است.\n\n### طول (سختگیرانه رعایت کن)\nپست باید در یک نگاه خوانده شود. پرحرفی ممنوع.\n\nخروجی:\n- verdict: فقط یکی از strong / maybe / reject.\n- reason: دلیل این تصمیم، حداکثر یک جمله. (این فقط برای من است و در پست نمی\u200cرود.)\n- title: حداکثر ۶۰ کاراکتر. فرمت: «نام پروژه — توضیح چندکلمه\u200cای». هیچ ایموجی نگذار.\n- hook: دقیقاً یک جمله، حداکثر ۱۴۰ کاراکتر. بگو پروژه چه کاری می\u200cکند، با لحن خودمانی.\n- why_interesting: حداکثر دو جمله و در مجموع حداکثر ۲۲۰ کاراکتر. دقیقاً همان چیزی که این پروژه را از بقیه جدا می\u200cکند — نه فهرست قابلیت\u200cها. اگر چیز خاصی وجود ندارد، رشته خالی بگذار.\n- audience: دقیقاً ۲ تا ۳ مورد، هر کدام دو یا سه کلمه.\n- category: یکی از AI / developer-tools / security / linux / web / mobile / creative / fun / experimental / productivity / backend / gaming / data.\n\nمجموع title + hook + why_interesting باید زیر ۴۲۰ کاراکتر باشد.\n',
+          },
+        ],
+      },
+      subnodes: {
+        model: aiModelPrimary,
+        outputParser: captionSchema,
+        // The fallback model attaches to the SECOND ai_languageModel input
+        // (needsFallback: true creates it) — see getInputs in ChainLlm's config.
+        fallbackModel: aiModelFallback,
+      },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Assemble Caption — render the final caption. All numbers come from Build
+// LLM Facts (the LLM never writes numbers — §32 of the spec, structural rule).
+// ---------------------------------------------------------------------------
+const assembleCaption = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Assemble Caption',
+    parameters: {
+      mode: 'runOnceForEachItem',
+      jsCode: [
+        'const llm = $json.output ?? $json;',
+        "const facts = $('Build LLM Facts').item.json;",
+        'const NL = String.fromCharCode(10);',
+        '',
+        "const missing = ['verdict', 'title', 'hook'].filter((k) => !llm || !llm[k]);",
+        'if (missing.length) {',
+        "  throw new Error('خروجی مدل ناقص است. فیلدهای غایب: ' + missing.join(', '));",
+        '}',
+        '',
+        "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');",
+        "const num = (n) => Math.round(Number(n) || 0).toLocaleString('en-US');",
+        '',
+        'const openers = [\'\\uD83E\\uDD2F\', \'\\uD83D\\uDD25\', \'\\uD83D\\uDC40\', \'\\uD83E\\uDDE0\', \'\\u26A1\', \'\\uD83E\\uDE84\', \'\\uD83E\\uDDE9\', \'\\uD83D\\uDEE0\', \'\\uD83D\\uDCA1\', \'\\uD83C\\uDFAF\', \'\\uD83D\\uDE80\', \'\\uD83D\\uDC19\'];',
+        "const seedStr = String(facts.full_name ?? '');",
+        'let seed = 0;',
+        'for (let i = 0; i < seedStr.length; i++) seed = (seed * 31 + seedStr.charCodeAt(i)) % 100000;',
+        'const opener = openers[seed % openers.length];',
+        '',
+        'const stars = num(facts.stars);',
+        "const lang = facts.language && facts.language !== 'unknown' ? esc(facts.language) : null;",
+        "const lic = facts.license_spdx && facts.license_spdx !== 'none' ? esc(facts.license_spdx) : null;",
+        'const audience = (Array.isArray(llm.audience) ? llm.audience : []).slice(0, 3).map(esc).filter(Boolean).join(\u060C\u0020);',
+        '',
+        'const lines = [opener + \' <b>\' + esc(llm.title) + \'</b>\', \'\', esc(llm.hook)];',
+        "const why = String(llm.why_interesting ?? '').trim();",
+        "if (why) lines.push('', why);",
+        "if (audience) lines.push('', '\\uD83D\\uDC65 ' + audience);",
+        "const meta = ['\\u2B50 ' + stars];",
+        'if (lang) meta.push(\'\\uD83D\\uDCBB \' + lang);',
+        'if (lic) meta.push(\'\\uD83D\\uDCDC \' + lic);',
+        "lines.push('', meta.join('   '));",
+        "lines.push('', 'https://github.com/' + facts.full_name);",
+        'lines.push(\'- \' + esc(facts.owner));',
+        'const caption = lines.join(NL);',
+        '',
+        'return { json: {',
+        '  verdict: llm.verdict,',
+        "  reason: llm.reason ?? '',",
+        '  category: llm.category ?? null,',
+        '  audience_json: JSON.stringify(Array.isArray(llm.audience) ? llm.audience : []),',
+        '  caption,',
+        '  caption_length: caption.length,',
+        '  stars,',
+        '  language: lang,',
+        '  license: lic,',
+        '  full_name: facts.full_name,',
+        '  repo_id: facts.repo_id,',
+        '} };',
+      ].join('\n'),
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Close Run Log — the funnel counters of the run. Note the deliberate zeros:
+// repos_seen/new/on_cooldown/passed_stage_a/readmes_fetched/passed_stage_b
+// are not aggregated inside the loop (lesson from execution 110: .all() on
+// loop-internal nodes only sees the last iteration). sent_to_llm and
+// drafts_created come from Collect Judgments, which ran once after the loop.
+// ---------------------------------------------------------------------------
+const closeRunLog = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.7,
+  config: {
+    name: 'Close Run Log',
+    parameters: {
+      operation: 'executeQuery',
+      query: 'UPDATE discovery_runs SET finished_at = now(), repos_seen = $2, repos_new = $3, repos_on_cooldown = $4, passed_stage_a = $5, readmes_fetched = $6, passed_stage_b = $7, sent_to_llm = $8, drafts_created = $9, error = $10 WHERE id = $1;',
+      options: {
+        queryReplacement: [
+        '={{ [',
+        "  $('Open Run Log').first().json.id,",
+        '  0, 0, 0, 0, 0, 0,',
+        "  $('Collect Judgments').first().json.judgedCount,",
+        "  $('Collect Judgments').first().json.finalPosts.length,",
+        '  null,',
+        '] }}',
+      ].join('\n'),
+        largeNumbersOutput: 'numbers',
+      },
+    },
+    credentials: { postgres: { name: 'Postgres account' } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Store Judgment — runs INSIDE the loop (one candidate per iteration).
+// Appends the complete judgment to workflow static data, a run-long
+// accumulator that survives loop iterations (lesson from execution 110:
+// $('X').all() on loop-internal nodes only sees the last iteration).
+// Nothing is written to the DB during the loop — selectFinal runs AFTER it.
+// ---------------------------------------------------------------------------
+const storeJudgment = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Store Judgment',
+    parameters: {
+      mode: 'runOnceForEachItem',
+      jsCode: [
+        'const a = $json;',
+        "const staticData = $getWorkflowStaticData('global');",
+        "if (!Array.isArray(staticData.judged)) staticData.judged = [];",
+        '',
+        "const candidates = $('Select 16').all().map((it) => it.json);",
+        "const cand = candidates.find((c) => String(c.repo.id) === String(a.repo_id));",
+        "if (!cand) throw new Error('no Select 16 candidate matches repo_id ' + a.repo_id);",
+        '',
+        'staticData.judged.push({',
+        '  verdict: a.verdict,',
+        "  reason: a.reason ?? '',",
+        '  category: a.category ?? null,',
+        "  audience: JSON.parse(a.audience_json ?? '[]') || [],",
+        '  caption: a.caption,',
+        '  repo: cand.repo,       // raw repo — upsert + telegram need full_name etc.',
+        "  readme: cand.readme ?? '',",
+        '  scored: cand.scored,   // normalized scored — selectFinal + upsert read .lane/.total',
+        '});',
+        '',
+        'return { json: { stored: true, repo_id: a.repo_id, verdict: a.verdict } };',
+      ].join('\n'),
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Wait 3 Minutes — pacing between LLM calls inside the loop. Free-tier model
+// quota is 20/min and 50/day; a 3-minute gap means ~20 requests/hour with
+// breathing room (approved design, 2026-09-08).
+// ---------------------------------------------------------------------------
+const wait3Minutes = node({
+  type: 'n8n-nodes-base.wait',
+  version: 1.1,
+  config: {
+    name: 'Wait 3 Minutes',
+    parameters: { resume: 'timeInterval', amount: 3, unit: 'minutes' },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Loop Repos (batch 1) — the candidates enter one at a time.
+// IMPORTANT (execution 119 root-cause): SplitInBatches v3 output 0 = 'done',
+// output 1 = 'loop'. The loop body hangs off output 1; the post-loop stage
+// (Collect Judgments) hangs off output 0. The first wiring had them swapped.
+// ---------------------------------------------------------------------------
+const loopRepos = splitInBatches({
+  version: 3,
+  config: {
+    name: 'Loop Repos',
+    parameters: { batchSize: 1, options: {} },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Collect Judgments — AFTER the loop: read the accumulator, run selectFinal
+// over ALL 16 judgments (caps decided with every result in view, per the
+// approved design), assign publish times (even 2-hour spacing starting
+// tomorrow 09:00 Tehran = 05:30 UTC; Tehran is UTC+3:30 with no DST).
+// ---------------------------------------------------------------------------
+const collectJudgments = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Collect Judgments',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: [
+        "const staticData = $getWorkflowStaticData('global');",
+        'const judged = staticData.judged || [];',
+        'if (!Array.isArray(judged) || judged.length === 0) {',
+        "  throw new Error('هیچ قضاوتی از حلقه نرسید (judged خالی است)');",
+        '}',
+        '',
+        "const eng = $('Load Engine').first().json.bundle;",
+        "const PUREGH = new Function(eng + '; return PUREGH;')();",
+        "const run = $('Dedup and Collect').first().json;",
+        'const limit = run.finalSelectionSize || 8;',
+        '',
+        'const res = PUREGH.selectFinal(judged, limit);',
+        '',
+        'const HOUR = 3600000;',
+        'const nowMs = Date.now();',
+        'const d = new Date(nowMs + 24 * HOUR);',
+        'd.setUTCHours(0, 0, 0, 0);',
+        'const base = d.getTime() + 5.5 * HOUR;',
+        '',
+        "const chosenIds = new Set(res.chosen.map((j) => String(j.repo.id)));",
+        'const finalPosts = res.chosen.map((j, i) => ({',
+        '  verdict: j.verdict,',
+        "  reason: j.reason ?? '',",
+        '  category: j.category ?? null,',
+        '  audience: Array.isArray(j.audience) ? j.audience : [],',
+        '  caption: j.caption,',
+        '  repo: j.repo,',
+        "  readme: j.readme ?? '',",
+        '  scored: j.scored,',
+        '  publish_at: new Date(base + i * 2 * HOUR).toISOString(),',
+        '}));',
+        '',
+        'const notChosen = judged',
+        "  .filter((j) => !chosenIds.has(String(j.repo.id)))",
+        '  .map((j) => ({',
+        "    repo: j.repo, scored: j.scored, readme: j.readme ?? '',",
+        "    verdict: j.verdict === 'reject' ? 'reject' : 'keep',",
+        '    isDuplicatePurpose: !!j.isDuplicatePurpose,',
+        "    reason: j.reason ?? '',",
+        '  }));',
+        '',
+        'staticData.judged = null;',
+        '',
+        'return [{ json: {',
+        '  seed: run.seed,',
+        '  finalPosts,',
+        '  notChosen,',
+        "  skipped: res.skipped.map((s) => ({ full_name: s.j.repo.full_name, why: s.why })),",
+        '  laneCount: res.laneCount,',
+        '  catCount: res.catCount,',
+        '  judgedCount: judged.length,',
+        '} }];',
+      ].join('\n'),
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Build Persist Payload — one SQL parameter array per repo (8 chosen + the
+// rest), matching query 3 of db/discovery-queries.sql. The reject verdict is
+// written ONLY for LLM-rejected / duplicate-purpose repos; a not-chosen but
+// approved repo keeps verdict NULL so cooldown reads it as notSelected (3 days)
+// — writing 'reject' here would trip posts_sync_human_rejected? No — that
+// trigger fires on posts.status, not repositories.verdict; but verdict='reject'
+// starts a 365-day llmRejected cooldown, which is wrong for a repo the model
+// actually liked.
+// ---------------------------------------------------------------------------
+const buildPersistPayload = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Build Persist Payload',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: [
+        "const cj = $('Collect Judgments').first().json;",
+        '',
+        'function repoRow(repo, readme, scored, lastStage, rejectVerdict) {',
+        '  const r = repo;',
+        '  const nowMs = Date.now();',
+        "  const created = Date.parse(r.created_at ?? '') || nowMs;",
+        "  const pushed = Date.parse(r.pushed_at ?? '') || nowMs;",
+        '  const ageDays = Math.max(1, (nowMs - created) / 86400000);',
+        '  const readmeBytes = (readme ?? "").length;',
+        '  const hasDemo = /\\.(gif|mp4|webm)|asciinema|youtube\\.com|youtu\\.be|demo|screenshot|preview/i.test(String(readme ?? ""));',
+        '  return {',
+        '    json: {',
+        '      params: [',
+        '        Number(r.id), r.full_name, r.owner, r.name, "https://github.com/" + r.full_name,',
+        '        r.description ?? null, r.homepage || null,',
+        '        Number(r.stars ?? 0), Number(r.forks ?? 0), Number(r.open_issues ?? 0),',
+        '        r.language ?? null, JSON.stringify(r.topics ?? []), r.license ?? null, null,',
+        '        !!r.fork, !!r.archived, !!r.is_template, r.default_branch ?? null,',
+        '        r.created_at ?? null, r.pushed_at ?? null, readmeBytes, hasDemo,',
+        '        Math.round(Math.max(0, (nowMs - pushed) / 86400000)), Math.round(ageDays),',
+        '        Number((Number(r.stars ?? 0) / ageDays).toFixed(3)),',
+        '        Number(scored.quality), Number(scored.relevance), Number(scored.total),',
+        '        scored.lane, JSON.stringify(scored.lanes ?? []),',
+        '        null, lastStage, r.found_by ?? null,',
+        '      ],',
+        '      verdict: rejectVerdict ?? null,',
+        '    },',
+        '  };',
+        '}',
+        '',
+        'const rows = [];',
+        'for (const p of cj.finalPosts) {',
+        "  rows.push(repoRow(p.repo, p.readme, p.scored, 'selected', null));",
+        '}',
+        'for (const n of cj.notChosen) {',
+        "  const isReject = n.verdict === 'reject' || n.isDuplicatePurpose;",
+        "  rows.push(repoRow(n.repo, n.readme, n.scored, isReject ? 'llm' : 'selected', isReject ? 'reject' : null));",
+        '}',
+        'return rows;',
+      ].join('\n'),
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Upsert Repos — query 3 of db/discovery-queries.sql, one row per item.
+// ---------------------------------------------------------------------------
+const upsertRepos = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.7,
+  config: {
+    name: 'Upsert Repos',
+    parameters: {
+      operation: 'executeQuery',
+      query: [
+        'INSERT INTO repositories (',
+        '    github_id, full_name, owner, name, url, description, homepage,',
+        '    stars, forks, open_issues, language, topics, license_spdx, license_name,',
+        '    is_fork, is_archived, is_template, default_branch,',
+        '    gh_created_at, gh_pushed_at, readme_bytes, has_demo,',
+        '    days_since_push, repo_age_days, star_velocity,',
+        '    source, last_quality, last_relevance, last_total, lane, lanes,',
+        '    last_reject_reason, last_stage, found_by',
+        ') VALUES (',
+        '    $1, $2, $3, $4, $5, $6, $7,',
+        '    $8, $9, $10, $11, $12::jsonb, $13, $14,',
+        '    $15, $16, $17, $18,',
+        '    $19, $20, $21, $22,',
+        '    $23, $24, $25,',
+        "    'discovery', $26, $27, $28, $29, $30::jsonb,",
+        '    $31, $32, $33',
+        ')',
+        'ON CONFLICT (github_id) DO UPDATE SET',
+        '    full_name          = EXCLUDED.full_name,',
+        '    description        = EXCLUDED.description,',
+        '    homepage           = EXCLUDED.homepage,',
+        '    stars              = EXCLUDED.stars,',
+        '    forks              = EXCLUDED.forks,',
+        '    open_issues        = EXCLUDED.open_issues,',
+        '    language           = EXCLUDED.language,',
+        '    topics             = EXCLUDED.topics,',
+        '    license_spdx       = EXCLUDED.license_spdx,',
+        '    license_name       = EXCLUDED.license_name,',
+        '    is_archived        = EXCLUDED.is_archived,',
+        '    gh_pushed_at       = EXCLUDED.gh_pushed_at,',
+        '    readme_bytes       = EXCLUDED.readme_bytes,',
+        '    has_demo           = EXCLUDED.has_demo,',
+        '    days_since_push    = EXCLUDED.days_since_push,',
+        '    repo_age_days      = EXCLUDED.repo_age_days,',
+        '    star_velocity      = EXCLUDED.star_velocity,',
+        '    last_quality       = EXCLUDED.last_quality,',
+        '    last_relevance     = EXCLUDED.last_relevance,',
+        '    last_total         = EXCLUDED.last_total,',
+        '    lane               = EXCLUDED.lane,',
+        '    lanes              = EXCLUDED.lanes,',
+        '    last_reject_reason = EXCLUDED.last_reject_reason,',
+        '    last_stage         = EXCLUDED.last_stage,',
+        '    found_by           = COALESCE(repositories.found_by, EXCLUDED.found_by),',
+        '    times_seen         = repositories.times_seen + 1,',
+        '    last_checked       = now()',
+        'RETURNING id, github_id;',
+      ].join('\n'),
+      options: { queryReplacement: '={{ $json.params }}', largeNumbersOutput: 'numbers' },
+    },
+    credentials: { postgres: { name: 'Postgres account' } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Save Posts Payload — one item carrying the posts INSERT payload as JSON.
+// repository_id is resolved inside SQL by github_id (rows were just upserted).
+// ---------------------------------------------------------------------------
+const savePostsPayload = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Save Posts Payload',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: [
+        "const cj = $('Collect Judgments').first().json;",
+        'let model = null;',
+        "try { model = $('AI Model - Primary').params.model.value ?? null; } catch (e) { model = null; }",
+        'const postsJson = JSON.stringify(cj.finalPosts.map((p) => ({',
+        '  github_id: Number(p.repo.id),',
+        '  caption: p.caption,',
+        '  model: model,',
+        '  publish_at: p.publish_at,',
+        '})));',
+        'return [{ json: { postsJson: postsJson, chosenCount: cj.finalPosts.length } }];',
+      ].join('\n'),
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Save Final Posts — bulk INSERT via jsonb_to_recordset, one node run.
+// executeOnce is set via setNodeSettings (the addNode operation silently
+// drops executeOnce — AGENTS.md §2).
+// ---------------------------------------------------------------------------
+const saveFinalPosts = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.7,
+  config: {
+    name: 'Save Final Posts',
+    parameters: {
+      operation: 'executeQuery',
+      query: [
+        'INSERT INTO posts (repository_id, caption, status, model, publish_at)',
+        "SELECT r.id, p.caption, 'draft', p.model, p.publish_at::timestamptz",
+        '  FROM jsonb_to_recordset($1::jsonb) AS p(github_id bigint, caption text, model text, publish_at text)',
+        '  JOIN repositories r ON r.github_id = p.github_id',
+        'RETURNING id, repository_id;',
+      ].join('\n'),
+      options: {
+        queryReplacement: '={{ $json.postsJson ? [ $json.postsJson ] : [] }}',
+        largeNumbersOutput: 'numbers',
+      },
+    },
+    credentials: { postgres: { name: 'Postgres account' } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Join Posts To Sends — pair the freshly inserted posts.id with the chosen
+// posts (same order), one item per post for the send loop.
+// ---------------------------------------------------------------------------
+const joinPostsToSends = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Join Posts To Sends',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: [
+        "const cj = $('Collect Judgments').first().json;",
+        'const saved = $input.all().map((it) => it.json);',
+        'if (saved.length !== cj.finalPosts.length) {',
+        "  throw new Error('Save Final Posts returned ' + saved.length + ' rows but ' + cj.finalPosts.length + ' posts were chosen');",
+        '}',
+        'const out = [];',
+        'for (let i = 0; i < cj.finalPosts.length; i++) {',
+        '  const p = cj.finalPosts[i];',
+        '  out.push({ json: {',
+        '    post_id: saved[i].id,',
+        '    repository_id: saved[i].repository_id,',
+        '    caption: p.caption,',
+        '    publish_at: p.publish_at,',
+        '    full_name: p.repo.full_name,',
+        '  } });',
+        '}',
+        'return out;',
+      ].join('\n'),
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Loop Bot Sends — one Telegram message per post, paced.
+// Same done/loop wiring rule as Loop Repos.
+// ---------------------------------------------------------------------------
+const loopBotSends = splitInBatches({
+  version: 3,
+  config: {
+    name: 'Loop Bot Sends',
+    parameters: { batchSize: 1, options: {} },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Send to Bot — the review message: caption + publish time + 4 inline
+// buttons (approve / reject / regenerate / manual). The publish time appears
+// ONLY here, never in the channel post itself.
+// ---------------------------------------------------------------------------
+const sendToBot = node({
+  type: 'n8n-nodes-base.telegram',
+  version: 1.2,
+  config: {
+    name: 'Send to Bot',
+    parameters: {
+      resource: 'message',
+      operation: 'sendMessage',
+      chatId: '5622960785',
+      replyMarkup: 'inlineKeyboard',
+      inlineKeyboard: {
+        rows: [
+          {
+            row: {
+              buttons: [
+                { text: '✅ تایید', additionalFields: { callback_data: "={{ 'ok:' + $json.post_id }}" } },
+                { text: '❌ رد', additionalFields: { callback_data: "={{ 'rej:' + $json.post_id }}" } },
+              ],
+            },
+          },
+          {
+            row: {
+              buttons: [
+                { text: '🔄 ساخت دوباره کپشن', additionalFields: { callback_data: "={{ 'regen:' + $json.post_id }}" } },
+                { text: '✍️ نوشتن دستی', additionalFields: { callback_data: "={{ 'manual:' + $json.post_id }}" } },
+              ],
+            },
+          },
+        ],
+      },
+      text: [
+        '={{ $json.caption',
+        "  + String.fromCharCode(10) + String.fromCharCode(10)",
+        "  + '🕒 زمان انتشار: '",
+        "    + new Date($json.publish_at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })",
+        "  + String.fromCharCode(10)",
+        "  + '⚠️ اگر هیچی لمس نکنی، همین کپشن در همین زمان منتشر می‌شود.' }}",
+      ].join('\n'),
+      additionalFields: {
+        appendAttribution: false,
+        disable_web_page_preview: true,
+        parse_mode: 'HTML',
+      },
+    },
+    credentials: { telegramApi: { name: 'Telegram account' } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Save Bot Message — record chat/message id so the review bot (section 5)
+// can edit THAT message in place. post_id comes from Join Posts To Sends via
+// the paired item, NOT from the telegram response ($json here is {ok,result}).
+// ---------------------------------------------------------------------------
+const saveBotMessage = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.7,
+  config: {
+    name: 'Save Bot Message',
+    parameters: {
+      operation: 'executeQuery',
+      query: 'UPDATE posts SET bot_chat_id = $1, bot_message_id = $2 WHERE id = $3::bigint;',
+      options: {
+        queryReplacement: [
+        '={{ [',
+        "  String($('Send to Bot').item.json.result.chat.id),",
+        "  Number($('Send to Bot').item.json.result.message_id),",
+        "  $('Join Posts To Sends').item.json.post_id,",
+        '] }}',
+      ].join('\n'),
+        largeNumbersOutput: 'numbers',
+      },
+    },
+    credentials: { postgres: { name: 'Postgres account' } },
+  },
+});
+
 const note = sticky(
-  '## Pure GitHub — Discovery\n\nروزانه پروژه\u200cهای Open Source را کشف، امتیازدهی و پیش\u200cنویس کپشن می\u200cسازد، سپس برای بازبینی انسانی می\u200cفرستد.',
+  '## Pure GitHub — Discovery\n\nروزانه پروژه\u200cهای Open Source را کشف، امتیازدهی و پیش\u200cنویس کپشن می\u200cسازد، سپس برای بازبینی انسانی به ربات می\u200cفرستد.',
   [schedule],
   { color: 5 },
 );
@@ -390,4 +1180,15 @@ export default workflow('puregh-discovery', 'Pure GitHub — Discovery')
   .to(allocateReadmeBudget)
   .to(fetchReadmes)
   .to(scoreStageB)
-  .to(select16);
+  .to(select16)
+  // section 4: similarity → loop → final selection → persist → bot review
+  .to(purposeSimilarity)
+  .to(buildLlmFacts)
+  .to(loopRepos
+    .onDone(collectJudgments.to(buildPersistPayload).to(upsertRepos)
+      .to(savePostsPayload).to(saveFinalPosts).to(joinPostsToSends)
+      .to(loopBotSends
+        .onDone(closeRunLog)
+        .onEachBatch(sendToBot.to(saveBotMessage).to(nextBatch(loopBotSends)))))
+    .onEachBatch(generateCaption.to(assembleCaption).to(storeJudgment)
+      .to(wait3Minutes).to(nextBatch(loopRepos))));

@@ -160,6 +160,14 @@ CREATE TABLE IF NOT EXISTS posts (
     telegram_chat_id    TEXT,
     telegram_message_id BIGINT,
 
+    -- step 4 (telegram-bot review flow): a post sits in the waiting list until
+    -- publish_at, then the publisher workflow sends it to the channel. The bot
+    -- message id lets the review bot edit THAT message in place (regenerate /
+    -- manual caption) without losing the buttons.
+    publish_at           TIMESTAMPTZ,
+    bot_chat_id          TEXT,
+    bot_message_id       BIGINT,
+
     created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
     decided_at          TIMESTAMPTZ,
     published_at        TIMESTAMPTZ
@@ -167,7 +175,9 @@ CREATE TABLE IF NOT EXISTS posts (
 
 CREATE INDEX IF NOT EXISTS posts_repository_id_idx ON posts (repository_id);
 CREATE INDEX IF NOT EXISTS posts_status_idx        ON posts (status);
-CREATE INDEX IF NOT EXISTS posts_published_at_idx  ON posts (published_at DESC);
+CREATE INDEX IF NOT EXISTS posts_published_at_idx ON posts (published_at DESC);
+-- The waiting list, ordered by when each post is due in the channel.
+CREATE INDEX IF NOT EXISTS posts_publish_at_idx    ON posts (publish_at) WHERE status = 'draft';
 
 -- At most one published post per repository. This is the hard guarantee behind
 -- the spec's duplicate-prevention rule; application logic can be bypassed,
