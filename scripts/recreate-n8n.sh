@@ -39,6 +39,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Secrets live in .env (gitignored), never in this tracked file. The bot token
+# must survive future re-runs of this script, so it is passed as a container env
+# the same way as the four vars below.
+if [ -f .env ]; then
+    # shellcheck disable=SC1091
+    set -a; . ./.env; set +a
+fi
+: "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is not set. Add it to .env first.}"
+
 CONTAINER=n8n
 VOLUME=n8n_data
 NET=puregh-net
@@ -83,6 +92,7 @@ docker run -d \
     -e GENERIC_TIMEZONE=Asia/Tehran \
     -e N8N_MCP_ACCESS_ENABLED=true \
     -e N8N_MCP_MANAGED_BY_ENV=true \
+    -e TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
     "$IMAGE" >/dev/null
 
 # n8n is standalone, so joining the project network is a separate step; the same

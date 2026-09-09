@@ -14,6 +14,10 @@ Caption فارسی، و انتشار در کانال پس از تأیید انس
 - کادنس: الان **یک پست در روز فقط برای تست**. در پروداکشن **۳ تا ۴ پست در روز**.
   سهمیه‌های `discovery/rules.js` برای همان ۳-۴ تنظیم شده‌اند، نه برای یکی.
 - مسیر پروژه: `/home/nimux/Documents/PureGithub-project`
+- **ایده‌ی «Schedule Message تلگرام» برای انتشار بررسی و رد شد (۲۰۲۶-۰۹-۰۹):**
+  Bot API هیچ پارامتر زمان‌بندی در `sendMessage` ندارد؛ Schedule Message قابلیت
+  کلاینت است نه API. لیست پیام‌های زمان‌بندی‌شده‌ی کانال هم از Bot API قابل
+  خواندن/ویرایش نیست. به‌جایش فاز ۸ با زمان‌بند n8n ساخته شد.
 
 ### ⚠️ هدف پروژه عوض شده — این را قبل از هر کاری بخوان
 سند و نسخه‌ی اول الگوریتم فقط دنبال «Hidden Gems» بودند. **کاربر این را صریحاً
@@ -41,8 +45,9 @@ Caption فارسی، و انتشار در کانال پس از تأیید انس
 **قدم ۱ (انتشار دستی) کامل و end-to-end تست‌شده.** سه پست در کانال منتشر شد و
 یکی هم مسیر رد شدن را تست کرد.
 
-**قدم ۲ (الگوریتم Discovery) کامل، کالیبره و end-to-end تست‌شده — ولی هنوز
-workflow ندارد.** همه‌ی پیش‌نیازهای workflow سوم آماده‌اند:
+**قدم ۲ (الگوریتم Discovery) کامل، کالیبره و end-to-end تست‌شده — workflow سوم
+(Discovery) هم ساخته و تست شد (بخش ۴، اجرای ۱۲۰).** ربات تلگرام (workflow چهارم)
+ساخته شد (۵۸ نود، بخش ۵). همه‌ی پیش‌نیازهای workflow سوم آماده‌اند:
 
 | قطعه | فایل | وضعیت |
 |---|---|---|
@@ -82,6 +87,78 @@ JSON string تزریق می‌شود).
 
 گام بعدی: **بخش ۴** — Purpose Similarity → Loop 16 (Generate Caption → Assemble)
 → Select Final → Upsert + Save (زمان انتشار رندوم) → ارسال به ربات با ۴ دکمه‌ی اینلاین.
+✅ انجام شد (اجرای ۱۲۰ موفق).
+
+گام بعدی بعد از آن: **بخش ۵** — ربات تلگرام (workflow چهارم) + زمان‌بند انتشار. ✅ فازهای
+۱-۷ ربات ساخته شد (۵۸ نود، `Zro6k6d8JcAOOpfn`). باقی: فاز ۸ (زمان‌بند)، env توکن،
+تست زنده، همگام‌سازی فایل .ts.
+
+### ✅ بخش ۵ (ربات تلگرام) ساخته شد — فاز ۱ تا ۷ (۲۰۲۶-۰۹-۰۹)
+
+Workflow جدید و مستقل: **«Pure GitHub — Telegram Bot»**، id=`Zro6k6d8JcAOOpfn`
+(۲۸ فاز، ۵۸ نود، فعلاً غیرفعال). کاربر تصمیم گرفت ربات یک workflow جدا باشد تا
+در آینده ارتقایش آسان‌تر باشد. فایل منبع حقیقت: `workflows/puregh-telegram-bot.ts`
+(فقط اسکلت فاز ۱ در آن است — **باید با نسخه‌ی نهایی همگام شود**).
+
+ساخته‌شده (در n8n، با update_workflow گام‌به‌گام):
+| قابلیت | مسیر نودها |
+|---|---|
+| ۴ دکمه (ok/rej/regen/manual) | Telegram Trigger → Parse Update → Route Update → Parse Callback → هر شاخه |
+| ✅ تایید | فقط ack — پست دست‌نخورده در زمان خودش منتشر می‌شود |
+| ❌ رد | `status='rejected'` + ویرایش پیام (حذف دکمه‌ها) — تریگر human_rejected ریپو را ابدی قفل می‌کند |
+| 🔄 ساخت دوباره | Load Post → Load Repo → Fetch README (raw، retry) → Build Regen Facts → Regen Caption (LLM orcarouter→openrouter fallback) → Assemble → Save (attempt+1) → Edit Message با ۴ دکمه |
+| ✍️ نوشتن دستی | Answer Manual → Set Pending Post (static data) → متن بعدی = کپشن → UPDATE + ویرایش پیام |
+| 📋 لیست انتظار | Query Waiting List → Render → Send (HTTP مستقیم به Bot API با کیبورد داینامیک — چون telegram node کیبورد متغیر نمی‌پذیرد) |
+| 🕒 تغییر زمان | sched:id → pendingSchedId → Parse Time (فارسی: «فردا ساعت ۱۸»، تاریخ جلالی ۱۴۰۵/۰۶/۲۰، روز هفته؛ تبدیل جلالی→میلادی تست شد) → UPDATE publish_at |
+| ➕ افزودن به لیست | Parse Add URL → Check → Fetch Repo Metadata + Readme (GitHub API) → Build Facts → LLM → Assemble → Upsert Repo (source='submission') → Save Post (بدون publish_at) → پیش‌نمایش با ۴ دکمه → Save Bot Message |
+| انصراف | پاک‌کردن همه‌ی pending state |
+
+**نکات فنی که در این بخش محکم شد:**
+- **کیبورد داینامیک**: telegram node پارامتر `inlineKeyboard` fixedCollection است و expression روی کلش نمی‌گیرد؛ برای تعداد متغیر دکمه باید مستقیم به Bot API POST کرد (body JSON کامل با `reply_markup`). تست زنده نشده.
+- **توکن در نود HTTP**: نود ارسال لیست از `$env.TELEGRAM_BOT_TOKEN` می‌خواند — این env هنوز در کانتینر n8n **ست نشده** (کار باز).
+- **payload انبوه در Postgres**: `jsonb_array_elements($1::jsonb)` + ستون‌های `r->>'...'`؛ topics باید `to_jsonb(r->'topics')` باشد نه cast مستقیم (خطای «invalid input syntax for type json»).
+- **هشدارهای validate_workflow همه false-positive شناخته‌شده‌اند**: `resource:'callback'` در telegram node معتبر است (از سورس نود تأیید شد، خط ۵۴ مقدار 'callback' دارد) و هشدار DUPLICATE_SUBNODE_CONNECTION همان مستند discovery است (fallback به ورودی 1 درست وصل است). آنها را نادیده بگیر.
+
+**باقی‌مانده:**
+- ~~فاز ۸ = زمان‌بند انتشار~~ ✅ ساخته و تست شد (پایین را ببین).
+- ~~`TELEGRAM_BOT_TOKEN`~~ ✅ در `.env` (gitignore) و با `scripts/recreate-n8n.sh` به‌صورت
+  env کانتینر ست شد (اسکریپت حالا از `.env` می‌خواند؛ قبل از هر recreate چک می‌کند).
+- **تست زنده**: Telegram Trigger برخلاف آنچه قبلاً در مموری ثبت بود **polling نیست، webhook است** (از سورس نود تأیید شد — webhookMethods با setWebhook)؛ پس برای کلیک واقعی دکمه‌ها **URL عمومی لازم است** (مثل cloudflared quick tunnel) یا تست نیمه‌خودکار از مسیر text. AGENTS §۱۵ هم به این اشاره دارد.
+- **همگام‌سازی فایل .ts ربات** + کامیت (فقط اسکلت فاز ۱ در آن است).
+
+### ✅ فاز ۸ (زمان‌بند انتشار) ساخته و تست شد (۲۰۲۶-۰۹-۰۹)
+Workflow پنجم: **«Pure GitHub — Publisher»**، id=`1tVlx8NwE7Qe4WWa` (۴ نود، فعلاً
+غیرفعال). فایل منبع حقیقت: `workflows/puregh-publisher.ts`.
+
+```
+Every 10 Minutes → Claim Batch → Send to Channel → Mark Published
+```
+
+| مفهوم | پیاده‌سازی |
+|---|---|
+| Claim اتمیک | یک CTE: `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)` — دو اجرای همزمان هرگز یک پست را دوبار نمی‌فرستند؛ `queryBatching: 'transaction'` |
+| پست سررسیده | `status='draft' AND publish_at <= now()`، مرتب بر publish_at، سقف ۴ تا در هر tick |
+| بن‌بست (گزینه‌ی الف) | پستِ گیرکرده در `publishing` بیش از ۳۰ دقیقه → دوباره claim می‌شود (خودترمیم) |
+| Mark Published | `status='published'` + `published_at` + `telegram_message_id`؛ تریگر `posts_sync_published` خودش `repositories.published` را sync می‌کند (تست شد) |
+| DB خالی | اجرای ۱۲۵: Claim صفر ردیف برگرداند → بقیه‌ی زنجیره خاموش (رفتار پیش‌فرض n8n، بدون alwaysOutputData) |
+
+**تغییر اسکیما:** `posts.status` حالت `publishing` گرفت (در `schema.sql` و روی DB
+زنده با ALTER — هر دو). حالت گذرا است، ردیف هیچ‌وقت نباید ابدی در آن بماند.
+
+#### درس‌های فنی فاز ۸ (۲۰۲۶-۰۹-۰۹)
+| علامت | علت ریشه‌ای | رفع |
+|---|---|---|
+| `there is no parameter $2` (اجرا ۱۲۱) | نود Postgres `queryReplacement` رشته‌ای را با **split(',')** به آرایه تبدیل می‌کند (utils.ts خط ۵۲)؛ کاما درون expression مقادیر را نمی‌بُرد و فقط ۱ پارامتر ساخته می‌شد | expression باید **آرایه** برگرداند: `={{ [ a, b ] }}` — سورس نود (executeQuery.operation.js خط ۹۷: `if (Array.isArray(queryReplacement)) values = queryReplacement`) |
+| `invalid input syntax for bigint: "undefined"` (اجرا ۱۲۲) | خروجی تلگرام `{ok, result}` است — `id` ندارد؛ `String(undefined)` = "undefined" | `$('Claim Batch').item.json.id` از paired item — همان درس بخش ۴ |
+| `duplicate key ... posts_one_published_per_repo_idx` (اجرا ۱۲۳) | فیکسچر تست خراب بود: دو پست روی یک ریپو. ایندکس یکتا **درست کار کرد** و جلوی انتشار دوبار یک ریپو را گرفت | DELETE پست قدیمی فیکسچر؛ در دیتای واقعی discovery چنین حالتی رخ نمی‌دهد (هر ریپو حداکثر یک ردیف draft فعال دارد) |
+
+**تست‌های انجام‌شده:** SQL خام claim روی DB زنده (سررسیده + آینده + stuck-reclaim)؛
+اجرا ۱۲۴ موفق end-to-end (پیام واقعی message_id=12 در کانال، status='published'،
+sync ریپو)؛ اجرای ۱۲۵ با DB خالی. داده‌ی تست بعدش پاک شد (DB صفر). سه پیام تست
+(message_id 10-12) در کانال ماند — دیده‌ای، اشکال ندارد، خودت حذف کن.
+
+**نکته‌ی deployment:** workflow فعلاً `active: false` است. برای پروداکشن باید
+publish شود — ولی قبلش ربات و discovery هم فعال شوند تا صف پر باشد.
 
 ### ✅ بخش ۴ ساخته و end-to-end تست شد (۲۰۲۶-۰۹-۰۹)
 اجرا ۱۲۰ موفق: s-ui کشف شد، LLM واقعی (z-ai/glm-5.3-flash-free از orcarouter)
@@ -153,10 +230,14 @@ Save Posts Payload → Save Final Posts → Join Posts To Sends → Loop Bot Sen
 - **بخش ۵** (workflow های جدید): ۵-۱ workflow ربات با Telegram Trigger و هندل
   ۴ دکمه + حالت منتظر-متن · ۵-۲ دستور لیست انتظار · ۵-۳ دستور افزودن به لیست ·
   ۵-۴ workflow زمان‌بند انتشار · ۵-۵ تست + کامیت
+  (۵-۱ تا ۵-۳ انجام شد؛ ۵-۴ و ۵-۵ مانده — بالا را ببین.)
 
-نکته‌ی فنی: Telegram Trigger فقط در حالت Active کار می‌کند (polling، بدون URL
-عمومی — برای لپ‌تاپ بدون IP کافی است). دکمه‌های ۴گانه در بخش ۴ ساخته می‌شوند ولی
-کلیکشان در بخش ۵ هندل می‌شود.
+نکته‌ی فنی: ⚠️ **این فرض قدیمی مموری غلط بود و اصلاح شد:** «Telegram Trigger فقط
+در حالت Active کار می‌کند (polling، بدون URL عمومی)». سورس نود (TelegramTrigger.node.js)
+نشان می‌دهد این trigger **webhook-based است** — در Active شدن با `setWebhook` به
+`getNodeWebhookUrl('default')` ثبت می‌شود و سرورهای تلگرام باید بتوانند به n8n
+برسند. برای کلیک واقعی دکمه‌ها **URL عمومی لازم است** (cloudflared quick tunnel،
+یا استقرار روی VPS)؛ بدون آن فقط مسیر text (دستورهای متنی) قابل تست است.
 
 ### ⚠️ طرح حلقه‌ی LLM عوض شد — تک‌به‌تک + انتخاب پس از حلقه (۲۰۲۶-۰۹-۰۸)
 اول حلقه‌ی batching پنج‌تایی ساخته شد؛ روی مدل‌های free سه بار شکست خورد:
@@ -372,15 +453,18 @@ remote ندارد — هنوز جایی push نشده.
 - `pgvector` از روز اول فعال شد تا فاز RAG نیاز به migrate نداشته باشد.
 - ویو `published_feed` برای مرور سریع.
 
-## ۶) سه workflow در n8n
+## ۶) پنج workflow در n8n
 
 | نام | id | کار |
 |---|---|---|
-| Pure GitHub — Manual Publish | `oSo3G6YhDd8603eu` | مسیر اصلی |
+| Pure GitHub — Manual Publish | `oSo3G6YhDd8603eu` | مسیر اصلی (قدم ۱) |
+| Pure GitHub — Discovery | `hHSwbbOBKRIWStRU` | قدم ۲ — کشف روزانه (بخش ۱-۴) |
+| Pure GitHub — Telegram Bot | `Zro6k6d8JcAOOpfn` | ربات بازبینی (بخش ۵، فاز ۱-۷) |
+| Pure GitHub — Publisher | `1tVlx8NwE7Qe4WWa` | زمان‌بند انتشار (فاز ۸) |
 | Pure GitHub — Provider Check | `gpFQDxJSXQerF0VT` | تست هر provider سازگار OpenAI |
 | Pure GitHub — Telegram Channel Check | `A3VMKNB4oVfkxHJx` | تشخیص خطای chat not found |
 
-هر سه `active: false` هستند (اجرای دستی/تست).
+همه `active: false` هستند (اجرای دستی/تست).
 
 ### زنجیره workflow اصلی
 ```

@@ -149,7 +149,11 @@ CREATE TABLE IF NOT EXISTS posts (
 
     caption             TEXT         NOT NULL,
     status              TEXT         NOT NULL DEFAULT 'draft'
-                                     CHECK (status IN ('draft', 'approved', 'rejected', 'published', 'failed')),
+                                     -- 'publishing': transient state set by the
+                                     -- publisher workflow right before sending to
+                                     -- the channel (atomic claim, see step 5).
+                                     -- Stuck rows (>30 min) are reclaimable.
+                                     CHECK (status IN ('draft', 'approved', 'rejected', 'publishing', 'published', 'failed')),
 
     -- Which model wrote it, and how many attempts this repo needed. Both feed
     -- the "regeneration rate" metric from the spec.
