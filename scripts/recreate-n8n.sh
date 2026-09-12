@@ -93,6 +93,7 @@ docker run -d \
     -e N8N_MCP_ACCESS_ENABLED=true \
     -e N8N_MCP_MANAGED_BY_ENV=true \
     -e TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
+    -e N8N_BLOCK_ENV_ACCESS_IN_NODE=false \
     "$IMAGE" >/dev/null
 
 # n8n is standalone, so joining the project network is a separate step; the same
