@@ -1,6 +1,6 @@
 # AGENTS.md — حافظه پروژه Pure GitHub (برای دستیار opencode)
 
-> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-06
+> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-12
 
 ## ۱) پروژه چیست؟
 
@@ -90,15 +90,17 @@ JSON string تزریق می‌شود).
 ✅ انجام شد (اجرای ۱۲۰ موفق).
 
 گام بعدی بعد از آن: **بخش ۵** — ربات تلگرام (workflow چهارم) + زمان‌بند انتشار. ✅ فازهای
-۱-۷ ربات ساخته شد (۵۸ نود، `Zro6k6d8JcAOOpfn`). باقی: فاز ۸ (زمان‌بند)، env توکن،
-تست زنده، همگام‌سازی فایل .ts.
+۱-۷ ربات ساخته شد (۵۸ نود، `Zro6k6d8JcAOOpfn`)، فاز ۸ هم ساخته و تست شد
+(`1tVlx8NwE7Qe4WWa`)، و مسیرهای متنی ربات تست زنده شدند (اجراهای ۱۲۶-۱۳۵).
+باقی‌مانده: تست زنده‌ی دکمه‌های اینلاین (نیاز به URL عمومی)، همگام‌سازی فایل
+`.ts` ربات، و فعال‌کردن workflow ها برای پروداکشن.
 
 ### ✅ بخش ۵ (ربات تلگرام) ساخته شد — فاز ۱ تا ۷ (۲۰۲۶-۰۹-۰۹)
 
 Workflow جدید و مستقل: **«Pure GitHub — Telegram Bot»**، id=`Zro6k6d8JcAOOpfn`
 (۲۸ فاز، ۵۸ نود، فعلاً غیرفعال). کاربر تصمیم گرفت ربات یک workflow جدا باشد تا
 در آینده ارتقایش آسان‌تر باشد. فایل منبع حقیقت: `workflows/puregh-telegram-bot.ts`
-(فقط اسکلت فاز ۱ در آن است — **باید با نسخه‌ی نهایی همگام شود**).
+(✅ کامیت `db3261e` — با نسخه‌ی کامل ۵۹نودی n8n همگام شد؛ ۵۷ نود عملکردی + ۲ استیکی).
 
 ساخته‌شده (در n8n، با update_workflow گام‌به‌گام):
 | قابلیت | مسیر نودها |
@@ -114,8 +116,8 @@ Workflow جدید و مستقل: **«Pure GitHub — Telegram Bot»**، id=`Zro6
 | انصراف | پاک‌کردن همه‌ی pending state |
 
 **نکات فنی که در این بخش محکم شد:**
-- **کیبورد داینامیک**: telegram node پارامتر `inlineKeyboard` fixedCollection است و expression روی کلش نمی‌گیرد؛ برای تعداد متغیر دکمه باید مستقیم به Bot API POST کرد (body JSON کامل با `reply_markup`). تست زنده نشده.
-- **توکن در نود HTTP**: نود ارسال لیست از `$env.TELEGRAM_BOT_TOKEN` می‌خواند — این env هنوز در کانتینر n8n **ست نشده** (کار باز).
+- **کیبورد داینامیک**: telegram node پارامتر `inlineKeyboard` fixedCollection است و expression روی کلش نمی‌گیرد؛ برای تعداد متغیر دکمه باید مستقیم به Bot API POST کرد (body JSON کامل با `reply_markup`). ✅ تست زنده شد (اجرا ۱۳۳: پیام واقعی با کیبورد، message_id=25).
+- **توکن در نود HTTP**: نود ارسال لیست از `$env.TELEGRAM_BOT_TOKEN` می‌خواند — این env در کانتینر n8n ست شده (از `.env` با `scripts/recreate-n8n.sh`) و کانتینر با `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` بازساخت شده تا expression اجازه‌ی خواندنش را داشته باشد.
 - **payload انبوه در Postgres**: `jsonb_array_elements($1::jsonb)` + ستون‌های `r->>'...'`؛ topics باید `to_jsonb(r->'topics')` باشد نه cast مستقیم (خطای «invalid input syntax for type json»).
 - **هشدارهای validate_workflow همه false-positive شناخته‌شده‌اند**: `resource:'callback'` در telegram node معتبر است (از سورس نود تأیید شد، خط ۵۴ مقدار 'callback' دارد) و هشدار DUPLICATE_SUBNODE_CONNECTION همان مستند discovery است (fallback به ورودی 1 درست وصل است). آنها را نادیده بگیر.
 
@@ -123,8 +125,39 @@ Workflow جدید و مستقل: **«Pure GitHub — Telegram Bot»**، id=`Zro6
 - ~~فاز ۸ = زمان‌بند انتشار~~ ✅ ساخته و تست شد (پایین را ببین).
 - ~~`TELEGRAM_BOT_TOKEN`~~ ✅ در `.env` (gitignore) و با `scripts/recreate-n8n.sh` به‌صورت
   env کانتینر ست شد (اسکریپت حالا از `.env` می‌خواند؛ قبل از هر recreate چک می‌کند).
-- **تست زنده**: Telegram Trigger برخلاف آنچه قبلاً در مموری ثبت بود **polling نیست، webhook است** (از سورس نود تأیید شد — webhookMethods با setWebhook)؛ پس برای کلیک واقعی دکمه‌ها **URL عمومی لازم است** (مثل cloudflared quick tunnel) یا تست نیمه‌خودکار از مسیر text. AGENTS §۱۵ هم به این اشاره دارد.
-- **همگام‌سازی فایل .ts ربات** + کامیت (فقط اسکلت فاز ۱ در آن است).
+- ~~تست زنده مسیرهای متنی~~ ✅ شب ۲۰۲۶-۰۹-۰۹ با pin روی تریگر انجام شد (پایین).
+- ~~تغییر env کانتینر + همگام‌سازی فایل .ts ربات~~ ✅ کامیت‌های `290bdea` و `db3261e` (۲۰۲۶-۰۹-۱۲).
+- **تست زنده دکمه‌های اینلاین**: Telegram Trigger برخلاف آنچه قبلاً در مموری ثبت بود **polling نیست، webhook است** (از سورس نود تأیید شد — webhookMethods با setWebhook)؛ پس برای کلیک واقعی دکمه‌ها **URL عمومی لازم است** (مثل cloudflared quick tunnel). AGENTS §۱۵ هم به این اشاره دارد.
+- **فعال‌کردن workflow ها برای پروداکشن** (Publisher → ربات → Discovery، به همین ترتیب تا صف پر باشد).
+
+### ✅ تست زنده‌ی مسیرهای متنی ربات — اجراهای ۱۲۶ تا ۱۳۵ (۲۰۲۶-۰۹-۰۹)
+روش: **pinData روی نود تریگر** (`Bot Updates`) — بدون URL عمومی، update پیام/کالبک
+دستی pin می‌شود و اجرای manual زنجیره را راه می‌اندازد. پنج چیز با این تست‌ها
+محکم شد (چهار باگ جدید + یک فیکس دنباله‌دار):
+
+| # | علامت (اجرا) | علت ریشه‌ای | رفع |
+|---|---|---|---|
+| ۱ | `ExpressionError: access to env vars denied` در `Send Waiting List` (اجرا ۱۲۷) | در n8n جدید `N8N_BLOCK_ENV_ACCESS_IN_NODE` **پیش‌فرض true** است — `$env.TELEGRAM_BOT_TOKEN` در expression بلاک می‌شود (پیشنهاد خود خطا: حذف آن env) | کانتینر با `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` بازساخت شد (`scripts/recreate-n8n.sh`، یک‌بار برای همیشه — از HostConfig قابل مشاهده است). اجرای ۱۲۸ بعدش موفق |
+| ۲ | `Bad Request: can't parse InlineKeyboardButton: Text buttons are not allowed in the inline keyboard` (اجرا ۱۳۲) | دکمه ساخته‌شده در Render فقط `text` داشت: `callback_data` در `additionalFields` مانده بود و expression ارسال `b.callback_data` را می‌خواند = `undefined` → تلگرام دکمه‌ی متنی خالص را در inline keyboard نمی‌پذیرد | حالا خود Render دکمه را با `callback_data` در سطح خود دکمه می‌سازد (`{ text, callback_data: 'sched:'+id }`) — ارسال همان `b.callback_data` را می‌خواند. اجرای ۱۳۳ موفق (message_id=25 واقعی) |
+| ۳ | `cannot extract elements from an object` در `Upsert Add Repo` (اجرا ۱۳۰) | کوئری انبوه `jsonb_array_elements($1::jsonb)` را کپی کرده بود ولی `repoJson` یک **آبجکت تکی** سریالایزشده بود نه آرایه | `queryReplacement` حالا خودش wrap می‌کند: `[ JSON.stringify([ JSON.parse($json.repoJson) ]) ]` — هم شکل داده با SQL هم‌خوان می‌شود، هم قانون آرایه‌ای‌بودن expression رعایت می‌شود. اجرای ۱۳۱ موفق: upsert با id=4 برگشت |
+| ۴ | `publish_at` سایلنت NULL می‌شد — UPDATE صفر ردیف بدون خطا (نیاز به فیکس دوباره در ۲۰:۴۹) | `Update Publish At` postId را از Parse Time می‌خواند که آن را از **static data** می‌گرفت — در اجرای manual بین نودها منتقل نمی‌شود → `undefined` → `sched:undefined` → UPDATE بی‌اثر (بدون RETURNING معلوم هم نمی‌شد) | postId مستقیم از paired item در Route Text خوانده می‌شود. اجرای ۱۳۵ موفق: «فردا ساعت ۱۸» → publish_at=2026-09-11 18:00+03:30 |
+| ۵ | دکمه‌ی لیست انتظار برای پستِ بدون زمان، «۱۱ دی ساعت ۰۳:۳۰» نشان می‌داد (اجرا ۱۳۲) — تاریخ جلالیِ معتبرنما ولی بی‌معنا | `new Date(null)` در جاوااسکریپت **Invalid Date نیست** — null به 0 تبدیل می‌شود = Unix epoch؛ ۱ ژانویه ۱۹۷۰ ساعت ۳۰ دقیقه بعدازنیمه‌شب تهران = «۱۱ دی ۱۳۴۸» در تقویم فارسی. سال چاپ نمی‌شد پس خرابی شبیه تاریخ واقعی بود | تابع `fa` در Render نال‌گارد گرفت: `d ? new Date(d).toLocaleString('fa-IR',...) : 'بدون زمان'`. اجرای ۱۳۳ بعدش «بدون زمان» صحیح نشان داد |
+
+**همه‌ی مسیرهای متنی تست‌شده و موفق:** لیست انتظار (خالی و پر)، افزودن به لیست با
+`rastikerdar/vazirmatn` واقعی (metadata + README خام + LLM orcarouter با
+`z-ai/glm-5.3-flash-free` → verdict=strong، پیش‌نمایش با ۴ دکمه، upsert با
+source='submission')، و تغییر زمان انتشار. **«افزودن به لیست» عملاً اولین پست
+کاربرمحور سیستم است** — کل زنجیره‌ی متادیتا→LLM→DB→پیام ربات بدون دست‌کاری کار کرد.
+
+**داده‌ی باقی‌مانده در DB (عمداً، پاک نشده):** ریپوی vazirmatn (id=4،
+source='submission') + پست id=4 با publish_at=2026-09-11 18:00+03:30 که **سررسیده
+گذشته ولی منتشر نشده** — Publisher هنوز active نیست. این ردیف نباید دستی حذف شود؛
+فعال‌کردن Publisher (یا تست بعدی فاز ۸) باید آن را واقعاً منتشر کند.
+
+**دو نکته‌ی رفتاری از این تست‌ها:** (۱) پاسخ موفق Bot API مستقیماً `message_id`
+دارد (در `result.message_id`) — برای ذخیره در Save Bot Message. (۲) structured
+output زیر `output` برمی‌گردد و قانون `$json.output ?? $json` در مسیر add هم
+برقرار است.
 
 ### ✅ فاز ۸ (زمان‌بند انتشار) ساخته و تست شد (۲۰۲۶-۰۹-۰۹)
 Workflow پنجم: **«Pure GitHub — Publisher»**، id=`1tVlx8NwE7Qe4WWa` (۴ نود، فعلاً
@@ -230,7 +263,7 @@ Save Posts Payload → Save Final Posts → Join Posts To Sends → Loop Bot Sen
 - **بخش ۵** (workflow های جدید): ۵-۱ workflow ربات با Telegram Trigger و هندل
   ۴ دکمه + حالت منتظر-متن · ۵-۲ دستور لیست انتظار · ۵-۳ دستور افزودن به لیست ·
   ۵-۴ workflow زمان‌بند انتشار · ۵-۵ تست + کامیت
-  (۵-۱ تا ۵-۳ انجام شد؛ ۵-۴ و ۵-۵ مانده — بالا را ببین.)
+  (۵-۱ تا ۵-۴ انجام شد و تست شد؛ از ۵-۵ همگام‌سازی فایل .ts و کامیت نهایی مانده.)
 
 نکته‌ی فنی: ⚠️ **این فرض قدیمی مموری غلط بود و اصلاح شد:** «Telegram Trigger فقط
 در حالت Active کار می‌کند (polling، بدون URL عمومی)». سورس نود (TelegramTrigger.node.js)
@@ -319,18 +352,24 @@ Save Posts Payload → Save Final Posts → Join Posts To Sends → Loop Bot Sen
 ورودی بدهید، یا (ب) بعد از addNode با عملیات `setNodeSettings` مقدار
 `settings.executeOnce: true` را بگذارید. با گزینه‌ی (ب) تست شد و درست شد.
 
-### دیتابیس الان خالی است (عمداً)
-داده‌ی تست دو بار پاک شد: یک‌بار ۲۰۲۶-۰۹-۰۵ (۶ ریپو + ۶ پست) و یک‌بار
-۲۰۲۶-۰۹-۰۶ (۱ ریپو + ۴ پست، همه از تست‌های `imgcompress`). بکاپ‌ها:
+### وضعیت فعلی دیتابیس (۲۰۲۶-۰۹-۱۲)
+داده‌ی تست سه بار پاک شد: ۲۰۲۶-۰۹-۰۵ (۶ ریپو + ۶ پست)، ۲۰۲۶-۰۹-۰۶ (۱ ریپو +
+۴ پست از تست‌های `imgcompress`)، و بعد از تست فاز ۸. بکاپ‌ها:
 `backups/db-20260905-121624.dump` و `backups/db-20260906-010246-before-purge.dump`.
 ردیف‌های `discovery_runs` از تست‌های workflow هم بارها TRUNCATE شدند.
 
-آن داده یک درس داشت که همچنان معتبر است: `bat` (۶۰k★) و `fzf` (۸۲k★) با verdict
-`strong` وارد شده بودند، **چون هیچ فیلتری سر راهشان نبود**. الگوریتم قدم ۲
-همین شکاف را می‌بندد.
+**الان DB خالی نیست (عمداً):** یک ریپو (`rastikerdar/vazirmatn`، id=4،
+source='submission'، verdict=strong) و یک پست (id=4، status='draft'،
+publish_at=2026-09-11 18:00+03:30) از تست زنده‌ی مسیر «افزودن به لیست» ربات
+مانده‌اند. پست سررسیده‌ی گذشته است ولی Publisher غیرفعال است — با فعال‌شدن
+Publisher باید منتشر شود. این دو ردیف را دستی حذف نکن.
 
-فیکسچرهای تست شباهت هدف هم بعد از تست پاک شدند (`github_id` های ۹۰۰۰۰۱ تا
-۹۰۰۰۰۵)، و فیکسچرهای تست cooldown هم (۹۹۰۰۰۱ تا ۹۹۰۰۰۸). دیتابیس صفر رکورد است.
+آن داده‌ی قدیمی یک درس داشت که همچنان معتبر است: `bat` (۶۰k★) و `fzf` (۸۲k★)
+با verdict `strong` وارد شده بودند، **چون هیچ فیلتری سر راهشان نبود**. الگوریتم
+قدم ۲ همین شکاف را می‌بندد.
+
+فیکسچرهای تست شباهت هدف بعد از تست پاک شدند (`github_id` های ۹۰۰۰۰۱ تا
+۹۰۰۰۰۵)، و فیکسچرهای تست cooldown هم (۹۹۰۰۰۱ تا ۹۹۰۰۰۸).
 
 فازهای بعدی (هنوز شروع نشده): Reference Learning، RAG، Feedback Loop.
 
@@ -385,9 +424,11 @@ warning "DNS resolver has no external nameservers" cid=f20df218...  ← همان
 
 **چرا آن اسکریپت وجود دارد:** n8n داخل compose نیست، پس آرگومان‌های `docker run`
 اش هیچ‌جا ثبت نبود جز HostConfig خود کانتینر — با `docker rm` از بین می‌رفت.
-اسکریپت همان ثبت است. اگر روزی کانتینر را دستی ساختی، این چهار env یادت نرود،
-مخصوصاً دو تای آخر که بی آنها **MCP قطع می‌شود**: `TZ`، `GENERIC_TIMEZONE`،
-`N8N_MCP_ACCESS_ENABLED`، `N8N_MCP_MANAGED_BY_ENV`.
+اسکریپت همان ثبت است. اگر روزی کانتینر را دستی ساختی، این شش env یادت نرود:
+`TZ`، `GENERIC_TIMEZONE`، `N8N_MCP_ACCESS_ENABLED`، `N8N_MCP_MANAGED_BY_ENV`
+(بی این دو MCP قطع می‌شود)، `TELEGRAM_BOT_TOKEN`، و
+`N8N_BLOCK_ENV_ACCESS_IN_NODE=false` (بی این، هر expression `$env` بلاک می‌شود —
+اجرا ۱۲۷ ربات).
 
 `scripts/setup.sh` حالا **یک اسم خارجی را هم صریح تست می‌کند**، نه فقط
 `puregh-db` — چون همان‌طور که دیدیم رسیدن به DB هیچ چیزی درباره‌ی اینترنت ثابت
@@ -430,10 +471,14 @@ discovery/regression.mjs    ۳۷ فیکسچر مرجع در ۴ گروه (بای�
 `import.meta.dirname` استفاده می‌کنند.
 
 پروژه تحت **گیت** است (شاخه `main`، هویت repo-local: `nimux <nimux@local>`).
-هشت کامیت: `9c3507f` قدم ۱، `d8ba600` علامت‌گذاری داده‌ی تست، `b52cfff` الگوریتم
-Discovery، `abe4a13` مستندسازی تغییر هدف، `49ccd90` پیش‌نیازهای workflow سوم،
-`dafc7e7` ثبت هش کامیت پنجم، `aa896ab` قفل کردن DNS کانتینر n8n و رفع بکاپ خالی،
-`75c30d2` اصلاح nearMiss + ثبت §۱۷.
+هفده کامیت تا ۲۰۲۶-۰۹-۱۲ — به ترتیب: `9c3507f` قدم ۱، `d8ba600` علامت‌گذاری
+داده‌ی تست، `b52cfff` الگوریتم Discovery، `abe4a13` مستندسازی تغییر هدف،
+`49ccd90` پیش‌نیازهای workflow سوم، `dafc7e7` ثبت هش کامیت پنجم، `aa896ab` قفل
+کردن DNS کانتینر n8n و رفع بکاپ خالی، `75c30d2` اصلاح nearMiss، `df18eb4` ثبت
+هش کامیت هشتم، `8937843` بخش ۲ discovery، `9a5aab5` بخش ۳ discovery، `f58cd9c`
+طرح ربات تلگرام، `9e5acef` بخش ۴ discovery، `c9b3c59` درس‌های بخش ۴،
+`d407af2` فاز ۸ publisher، `290bdea` env کانتینر (`N8N_BLOCK_ENV_ACCESS_IN_NODE=false`)،
+`db3261e` همگام‌سازی کامل فایل .ts ربات (۵۹ نود).
 remote ندارد — هنوز جایی push نشده.
 بعد از هر تغییر workflow در n8n، فایل `.ts` را همگام کن و کامیت بزن.
 
@@ -453,13 +498,13 @@ remote ندارد — هنوز جایی push نشده.
 - `pgvector` از روز اول فعال شد تا فاز RAG نیاز به migrate نداشته باشد.
 - ویو `published_feed` برای مرور سریع.
 
-## ۶) پنج workflow در n8n
+## ۶) شش workflow در n8n
 
 | نام | id | کار |
 |---|---|---|
 | Pure GitHub — Manual Publish | `oSo3G6YhDd8603eu` | مسیر اصلی (قدم ۱) |
 | Pure GitHub — Discovery | `hHSwbbOBKRIWStRU` | قدم ۲ — کشف روزانه (بخش ۱-۴) |
-| Pure GitHub — Telegram Bot | `Zro6k6d8JcAOOpfn` | ربات بازبینی (بخش ۵، فاز ۱-۷) |
+| Pure GitHub — Telegram Bot | `Zro6k6d8JcAOOpfn` | ربات بازبینی (بخش ۵، فاز ۱-۷؛ مسیرهای متنی تست‌شده) |
 | Pure GitHub — Publisher | `1tVlx8NwE7Qe4WWa` | زمان‌بند انتشار (فاز ۸) |
 | Pure GitHub — Provider Check | `gpFQDxJSXQerF0VT` | تست هر provider سازگار OpenAI |
 | Pure GitHub — Telegram Channel Check | `A3VMKNB4oVfkxHJx` | تشخیص خطای chat not found |
@@ -528,6 +573,11 @@ remote ندارد — هنوز جایی push نشده.
 | `127.0.0.1:5433` در credential ن8n | از داخل کانتینر باید `puregh-db:5432` باشد |
 | `EAI_AGAIN` روی **هر** اسم خارجی (openrouter، github، telegram) — ولی `puregh-db` سالم | DNS خود کانتینر n8n upstream نداشت. §۳ «باگ DNS» را ببین. |
 | `Bad Request: chat_id is empty` در `Probe 4 - Identify Bot` | خودِ Channel Check است، نه باگ: «چت کنترل» را پر نکرده‌ای و Probe 4 بی‌قید اجرا می‌شود. |
+| `ExpressionError: access to env vars denied` (اجرا ۱۲۷ ربات) | `N8N_BLOCK_ENV_ACCESS_IN_NODE` در n8n جدید پیش‌فرض true است. رفع: کانتینر با `=false` بازساخت. |
+| `Text buttons are not allowed in the inline keyboard` (اجرا ۱۳۲ ربات) | دکمه فقط `text` داشت؛ `callback_data` در `additionalFields` مانده بود و expression آن را نمی‌دید. رفع: Render خودش دکمه را با `callback_data` در سطح خود دکمه می‌سازد. |
+| `cannot extract elements from an object` (اجرا ۱۳۰ ربات) | `jsonb_array_elements($1)` آرایه می‌خواهد ولی `repoJson` آبجکت تکی بود. رفع: wrap در queryReplacement. |
+| UPDATE بی‌اثر بدون خطا (publish_at در اجرای manual ربات) | postId از static data خوانده می‌شد که در manual منتقل نمی‌شود → `sched:undefined`. رفع: paired item. |
+| تاریخ معتبرنما برای مقدار NULL (اجرا ۱۳۲ ربات: «۱۱ دی» = epoch) | `new Date(null)` = epoch است نه Invalid Date؛ +3:30 تهران = ۱ ژانویه ۱۹۷۰ = «۱۱ دی ۱۳۴۸» جلالی. رفع: نال‌گارد قبل از `new Date`. |
 
 
 ## ۱۰) قالب Caption (نسخه فعلی — تأییدشده)
