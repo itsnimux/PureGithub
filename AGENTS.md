@@ -1287,3 +1287,45 @@ Schedule Trigger (روزانه)
 (~۱ ساعت) + بیداری‌های کوتاه ربات + پینگ publisher ≈ **۹۵-۱۲۰ vCPU-ساعت/ماه →
 می‌گنجد**. با snapshot پیش‌فرض 4vCPU: یک روز کامل running = ۹۶ vCPU-ساعت = نصف
 سهمیه — پس منابع VM اصلی باید از snapshot سبک انتخاب شود یا resize پایین.
+
+### ✅ §۱۹) استقرار تست روی VM Freestyle — VM `puregh` (۲۰۲۶-۰۹-۱۳)
+هدف: تست زنده‌ی دکمه‌های اینلاین ربات (نیاز به URL عمومی داشت). VM: `puregh`
+(vm-50c1bc4f400d40898d9de1bdbad80068)، `freestyle/ubuntu-sm` (2vCPU/4GB)،
+idleTimeout=300s. **این VM محیط تست مستقل است — n8n لپ‌تاپ دست نمی‌خورد.**
+
+| قطعه | وضعیت |
+|---|---|
+| دامنه | `https://puregh-n8n.style.dev` → پورت 5678 (TLS rule `tls-3e73cbd1bffa4c68a71936bb3413c44b`) |
+| کانتینر puregh-db | pgvector/pg16 روی شبکه‌ی `puregh-net`، **دیتابیس تازه** (بدون بکاپ از لپ‌تاپ — تصمیم کاربر: سریع‌تر) + ۱۰ رکورد فیک (۵ ریپو github_id 900001-900005 + ۵ پست draft؛ پخش publish_at عمدی: ۳ آینده، ۱ گذشته، ۱ NULL برای تست «بدون زمان») |
+| کانتینر n8n | v2.34.6، volume `n8n_data` **کپی‌شده از لپ‌تاپ** (بعد از تمیزکاری: execution_data/history dumps حذف، 310MB→2.1MB) |
+| env کانتینر n8n | `TELEGRAM_BOT_TOKEN` (بات جدید)، `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`، `N8N_MCP_ACCESS_ENABLED=true`، `N8N_MCP_MANAGED_BY_ENV=true`، `N8N_WEBHOOK_URL=https://puregh-n8n.style.dev/`، TZ=Asia/Tehran |
+| بات | **جدید:** `@puregithubbot` («دستیار Pure Github») توکن `8932467023:AAFJ...` — بات قدیمی `@HermesNimux_robot` با یک «Hermes Agent» خارجی polling می‌شد و پیام‌ها را می‌خورد؛ کنار گذاشته شد |
+
+**نتیجه‌ی تست زنده (اجرا ۱۳۶):** «لیست انتظار» و «افزودن به لیست» و دکمه‌های
+✅/❌/🔄 **کار می‌کنند** روی VM — اولین تست واقعی webhook این پروژه از اینترنت.
+باقی‌مانده: تغییرات UX که کاربر خواست (پایین).
+
+#### باگ‌ها و درس‌های استقرار VM (۲۰۲۶-۰۹-۱۳)
+| علامت | علت ریشه‌ای | رفع |
+|---|---|---|
+| `Mismatching encryption keys` در استارت n8n | فایل `config` خودش کلید را دارد؛ ست‌کردن `N8N_ENCRYPTION_KEY` با همان مقدار هم mismatch می‌دهد | env را نده — فایل config ملاک است |
+| publish در UI: `Workflow could not be published — Version not found` | جدول `workflow_history` = **نسخه‌های ذخیره‌شده‌ی ورک‌فلو در n8n نسل جدید** است نه لاگ اجرا — حذفش موقع تمیزکاری publish را شکست | `workflow_history` را هرگز پاک نکن؛ در این استقرار از volume لپ‌تاپ dump گرفته و در VM ریستور شد |
+| API key دست‌ساز در sqlite → `unauthorized` | فرمت/امضای API key ساختار دارد؛ ساخت دستی ردیف کار نمی‌کند | API key را از UI بساز (Settings → n8n API). MCP JWT فقط برای endpoint MCP است نه REST |
+| `scp` فایل 68MB قطع می‌شد | حجم + احتمالاً ناپایداری تونل | sqlite را قبل از انتقال تمیز کن (execution_data حذف + VACUUM): 310MB→2.1MB→164KB gzip |
+| Webhook تلگرام `url: ""` بعد از active | ۱) توکن قدیمی به agent خارجی وصل بود ۲) بعد از تعویض credential، activate قبلی webhook را به بات قدیمی زده بود | بعد از هر تغییر credential باید deactivate→activate دوباره |
+| بات قدیمی جواب‌های AI می‌داد | بات `@HermesNimux_robot` به سرویس «Hermes Agent» خارجی وصل بود که با getUpdates پیام‌ها را می‌خورد | بات جدید ساخته شد: `@puregithubbot` |
+| ترتیب ثبت webhook | `webhook_entity` فقط بعد از publish/activate پر می‌شود | اول publish، بعد activate؛ برای re-register: deactivate→activate |
+
+#### تغییرات UX موردنظر کاربر (هنوز اعمال نشده — ۲۰۲۶-۰۹-۱۳)
+باید روی **VM** اعمال و تست شوند، بعد به لپ‌تاپ برگردند:
+1. **تغییر زمان:** دکمه شیشه‌ای فعلی popup دارد. جدید: کلیک روی دکمه → پیام جدید
+   (نام ریپو + زمان فعلی انتشار + دکمه‌ی انصراف). پیام بعدی کاربر = زمان جدید.
+   ۱ دقیقه سکوت → «عملیات تغییر زمان کنسل شد».
+2. **کپشن دستی:** همان popup دارد. جدید: کلیک → پیام «لطفا کپشن جدید خود را
+   ارسال کنید» + دکمه انصراف. پیام بعدی = کپشن. ۱ دقیقه سکوت → کنسل.
+3. **باگ regen:** بعد از «ساخت دوباره» زمان انتشار به «۱۱ دی ۱۳۴۸» تغییر
+   می‌کند = epoch (درس `new Date(null)` قدیمی). Regen **نباید publish_at را
+   دست بزند** — فقط کپشن و attempt.
+4. **مسیر add جدید:** لینک ریپو → پیام «انتخاب کنید:» + دکمه‌های «ساخت کپشن» /
+   «کپشن دستی». کپشن دستی = فلوی manual (با انصراف و timeout ۱ دقیقه) → پست
+   ذخیره + پیش‌نمایش ۴ دکمه. ساخت کپشن = فلوی فعلی LLM.
