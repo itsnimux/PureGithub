@@ -1,6 +1,6 @@
 # AGENTS.md — حافظه پروژه Pure GitHub (برای دستیار opencode)
 
-> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-12
+> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-14
 
 ## ۱) پروژه چیست؟
 
@@ -352,26 +352,31 @@ Save Posts Payload → Save Final Posts → Join Posts To Sends → Loop Bot Sen
 ورودی بدهید، یا (ب) بعد از addNode با عملیات `setNodeSettings` مقدار
 `settings.executeOnce: true` را بگذارید. با گزینه‌ی (ب) تست شد و درست شد.
 
-### وضعیت فعلی دیتابیس (۲۰۲۶-۰۹-۱۲)
+### وضعیت فعلی دیتابیس (۲۰۲۶-۰۹-۱۴)
 داده‌ی تست سه بار پاک شد: ۲۰۲۶-۰۹-۰۵ (۶ ریپو + ۶ پست)، ۲۰۲۶-۰۹-۰۶ (۱ ریپو +
 ۴ پست از تست‌های `imgcompress`)، و بعد از تست فاز ۸. بکاپ‌ها:
 `backups/db-20260905-121624.dump` و `backups/db-20260906-010246-before-purge.dump`.
 ردیف‌های `discovery_runs` از تست‌های workflow هم بارها TRUNCATE شدند.
 
-**الان DB خالی نیست (عمداً):** یک ریپو (`rastikerdar/vazirmatn`، id=4،
-source='submission'، verdict=strong) و یک پست (id=4، status='draft'،
-publish_at=2026-09-11 18:00+03:30) از تست زنده‌ی مسیر «افزودن به لیست» ربات
-مانده‌اند. پست سررسیده‌ی گذشته است ولی Publisher غیرفعال است — با فعال‌شدن
-Publisher باید منتشر شود. این دو ردیف را دستی حذف نکن.
-
-آن داده‌ی قدیمی یک درس داشت که همچنان معتبر است: `bat` (۶۰k★) و `fzf` (۸۲k★)
-با verdict `strong` وارد شده بودند، **چون هیچ فیلتری سر راهشان نبود**. الگوریتم
-قدم ۲ همین شکاف را می‌بندد.
+**وضعیت فعلی (پس از فعال‌شدن Publisher در اجرای ۱۴۵):**
+- پست id=4 (vazirmatn) **منتشر شد**: published_at=2026-09-14 15:00، message_id=13.
+  همان پست سررسیده‌ی قدیمی بود که منتظر Publisher فعال بود — بدهی اشباح را داد.
+- پست id=5 (`reloadlife/astrisk-web-ui`، verdict=maybe) هم منتشر شد (message_id=14،
+  2026-09-14 16:20) — اولین پستِ تولیدشده با فلوی کامل UX جدید.
+- پست‌های id=6 تا 9 هنوز `draft` بدون publish_at (ایجاد شده با مسیرهای add
+  دستی/LLM — `mobinhasanghasemi/backend-skill`، `AlbusSec/Penetration-List`،
+  `reloadlife/astrisk-web-ui`). کاربر زمانشان را با «لیست انتظار» تعیین می‌کند.
+- repositories: id 4/6/7/8 همه source='submission'. (id=6 published=t ولی پستش
+  draft است — از تست‌های UX؛ اشکالی ندارد.)
 
 فیکسچرهای تست شباهت هدف بعد از تست پاک شدند (`github_id` های ۹۰۰۰۰۱ تا
 ۹۰۰۰۰۵)، و فیکسچرهای تست cooldown هم (۹۹۰۰۰۱ تا ۹۹۰۰۰۸).
 
-فازهای بعدی (هنوز شروع نشده): Reference Learning، RAG، Feedback Loop.
+فازهای بعدی: فعال‌کردن Discovery برای پروداکشن (چون ربات و Publisher فعال‌اند و
+صف پست‌ها با discovery پر می‌شود)، مهاجرت کامل به VM Freestyle (§۱۸/§۱۹ —
+الان فقط تست است)، و بعد Reference Learning، RAG، Feedback Loop.
+ابزار جدید (سند NEW.md): Discovery Engine دوم برای اخبار/داستان‌های AI Agent —
+طرح تأییدشده، هنوز پیاده‌سازی نشده.
 
 ## ۳) محیط اجرا
 
@@ -504,12 +509,14 @@ remote ندارد — هنوز جایی push نشده.
 |---|---|---|
 | Pure GitHub — Manual Publish | `oSo3G6YhDd8603eu` | مسیر اصلی (قدم ۱) |
 | Pure GitHub — Discovery | `hHSwbbOBKRIWStRU` | قدم ۲ — کشف روزانه (بخش ۱-۴) |
-| Pure GitHub — Telegram Bot | `Zro6k6d8JcAOOpfn` | ربات بازبینی (بخش ۵، فاز ۱-۷؛ مسیرهای متنی تست‌شده) |
+| Pure GitHub — Telegram Bot | `Zro6k6d8JcAOOpfn` | ربات بازبینی (بخش ۵، فاز ۱-۸ + بازطراحی UX) |
 | Pure GitHub — Publisher | `1tVlx8NwE7Qe4WWa` | زمان‌بند انتشار (فاز ۸) |
 | Pure GitHub — Provider Check | `gpFQDxJSXQerF0VT` | تست هر provider سازگار OpenAI |
 | Pure GitHub — Telegram Channel Check | `A3VMKNB4oVfkxHJx` | تشخیص خطای chat not found |
 
-همه `active: false` هستند (اجرای دستی/تست).
+وضعیت active (۲۰۲۶-۰۹-۱۴): **ربات (`Zro6k6d8JcAOOpfn`) و Publisher
+(`1tVlx8NwE7Qe4WWa`) فعال‌اند** — لپ‌تاپ منبع webhook/schedule است، پشت
+تونل cloudflared (`N8N_WEBHOOK_URL` در env کانتینر). بقیه غیرفعال.
 
 ### زنجیره workflow اصلی
 ```
@@ -1316,16 +1323,33 @@ idleTimeout=300s. **این VM محیط تست مستقل است — n8n لپ‌�
 | بات قدیمی جواب‌های AI می‌داد | بات `@HermesNimux_robot` به سرویس «Hermes Agent» خارجی وصل بود که با getUpdates پیام‌ها را می‌خورد | بات جدید ساخته شد: `@puregithubbot` |
 | ترتیب ثبت webhook | `webhook_entity` فقط بعد از publish/activate پر می‌شود | اول publish، بعد activate؛ برای re-register: deactivate→activate |
 
-#### تغییرات UX موردنظر کاربر (هنوز اعمال نشده — ۲۰۲۶-۰۹-۱۳)
-باید روی **VM** اعمال و تست شوند، بعد به لپ‌تاپ برگردند:
-1. **تغییر زمان:** دکمه شیشه‌ای فعلی popup دارد. جدید: کلیک روی دکمه → پیام جدید
-   (نام ریپو + زمان فعلی انتشار + دکمه‌ی انصراف). پیام بعدی کاربر = زمان جدید.
-   ۱ دقیقه سکوت → «عملیات تغییر زمان کنسل شد».
-2. **کپشن دستی:** همان popup دارد. جدید: کلیک → پیام «لطفا کپشن جدید خود را
-   ارسال کنید» + دکمه انصراف. پیام بعدی = کپشن. ۱ دقیقه سکوت → کنسل.
-3. **باگ regen:** بعد از «ساخت دوباره» زمان انتشار به «۱۱ دی ۱۳۴۸» تغییر
-   می‌کند = epoch (درس `new Date(null)` قدیمی). Regen **نباید publish_at را
-   دست بزند** — فقط کپشن و attempt.
-4. **مسیر add جدید:** لینک ریپو → پیام «انتخاب کنید:» + دکمه‌های «ساخت کپشن» /
-   «کپشن دستی». کپشن دستی = فلوی manual (با انصراف و timeout ۱ دقیقه) → پست
-   ذخیره + پیش‌نمایش ۴ دکمه. ساخت کپشن = فلوی فعلی LLM.
+#### ✅ تغییرات UX اعمال شد — روی لپ‌تاپ، n8n اصلی (۲۰۲۶-۰۹-۱۴)
+هر ۴ خواسته روی workflow ربات لپ‌تاپ اعمال و تست شد (اجراهای ۱۴۴-۱۴۸). ربات
+الان **۷۳ نود** دارد (۷۱ عملکردی + ۳ استیکی):
+1. **تغییر زمان:** `sched:<id>` → `Load Sched Post` → `Ask Sched Time` (پیام
+   جدید با دکمه‌ی انصراف) → متن بعدی = زمان جدید.
+2. **کپشن دستی:** `manual:<id>` → `Ask Manual Caption` (پیام جدید + انصراف)
+   → `Save Manual Caption` → `Edit Message Manual`.
+3. **باگ regen:** `Edit Message Regen` نال‌گارد `publish_at` گرفت — regen فقط
+   کپشن و attempt را دست می‌زند، نه زمان انتشار.
+4. **مسیر add دوگانه:** لینک ریپو → `Send Add Choice` (دو دکمه) →
+   `addgen:owner/repo` (زنجیره‌ی LLM) یا `addmanual` → `Set Pending Add Manual`
+   → متن بعدی کاربر = کپشن → `Build Add Manual From Text` → زنجیره‌ی مجزای
+   **بدون LLM**: `Fetch Add Manual Metadata` → `Build Add Manual Save` →
+   `Upsert Add Manual Repo` → `Save Add Manual Post` → `Send Add Manual Preview`
+   (۴ دکمه‌ی کامل) → `Save Add Manual Bot Message`.
+- **Timeout:** همه‌ی حالت‌های pending پنجره‌ی ۶۰ ثانیه‌ای دارند — `Route Text`
+  تازگی را چک می‌کند و `Check Pending Timeout` → `Send Timed Out` پاک می‌کند.
+- نودهای `Answer Manual`/`Answer Sched` حذف شدند؛ `Clear Pending` سه‌گانه شد
+  (`Clear Pending` / `Clear Pending Cancel` / `Clear Pending Sched`).
+- ترتیب خروجی‌های `Parse Callback`: ok/rej/regen/manual/sched/**addgen/addmanual/cancel**/fallback.
+
+#### درس‌های اعمال UX (۲۰۲۶-۰۹-۱۴)
+| علامت | علت ریشه‌ای | رفع |
+|---|---|---|
+| JSON اعتبارسنجی وسط کد می‌شکست | متن فارسی/ایموجی داخل jsCode در JSON دستور | متن پیام‌ها را انگلیسی/اسکیپ‌شده در کد بده؛ جداسازی با چند عملیات کوچک‌تر |
+| `setNodeParameter` کلید `parameters` **تو‌در‌تو** ساخت به‌جای merge (خرابی شناخته‌شده) | به‌جای merge عمیق، کلید جدید می‌سازد | فیکس نهایی فقط با `updateNodeParameters` + `replace: true` |
+| ویرایش دستی UI بخشی از تغییرات MCP را بازنویسی کرد (قواعد ۵/۶/۷ `Parse Callback` هر سه `cancel` شدند؛ قانون ۰ `Route Manual Or Cancel` تکراری شد؛ `Send Add Manual Preview` خراب) | UI روی نسخه‌ی قدیمی ذخیره شد و تغییرات موازی را لغو کرد | بعد از هر ویرایش دستی UI، قبل از ادامه کل وضعیت را دوباره fetch کن |
+| مسیر دستی add به زنجیره‌ی LLM چسبیده بود (کپشن کاربر نادیده گرفته می‌شد) | `Build Add Manual From Text → Fetch Repo Metadata` (نود مشترک مسیر LLM) | نود HTTP مجزای `Fetch Add Manual Metadata` + زنجیره‌ی کاملاً مستقل |
+| 404 آنی در مسیر addgen | یال قدیمی `Send Add Choice → Fetch Repo Metadata`: پاسخ تلگرام `{ok,result}` اصلاً `full_name` ندارد | یال حذف شد؛ `Fetch Add Readme` از `$json.full_name` می‌خواند (از `Fetch Repo Metadata`) نه `$('Parse Add URL')` |
+| URL تونل عوض شد بعد از ری‌استارت cloudflared | quick tunnel هر بار URL جدید می‌دهد؛ `N8N_WEBHOOK_URL` کهنه می‌ماند | `recreate-n8n.sh` حالا `${N8N_WEBHOOK_URL:+...}` را می‌پذیرد؛ بعد از هر recreate باید webhook تلگرام deactivate→activate و Publisher دوباره publish شود |

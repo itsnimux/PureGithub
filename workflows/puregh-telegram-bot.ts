@@ -1,30 +1,30 @@
-// Pure GitHub — Telegram Bot (section 5, phases 1–7)
+// Pure GitHub — Telegram Bot (section 5, phases 1–8 + UX rework 2026-09-14)
 //
 // The review bot's private chat. Four inline buttons per draft post
 // (ok / rej / regen / manual), plus text commands:
 //   «لیست انتظار»  — waiting list with dynamic keyboard (sched:<id> buttons)
-//   «افزودن به لیست» or a github.com link — full add-to-list chain (metadata
-//                    → README → LLM → upsert source='submission' → preview)
+//   a github.com link — «انتخاب کنید:» message with two buttons
+//                    (addgen → LLM caption / addmanual → user writes caption)
 //   «انصراف»        — cancel any pending state
-// Pending text flows (manual caption, sched time) ride on workflow static data.
+// Pending text flows (manual caption, sched time, add-manual caption) ride on
+// workflow static data with a 60-second freshness window (Route Text) and a
+// stale-cleanup branch (Check Pending Timeout → Send Timed Out).
 //
-// One Telegram Trigger per bot (Telegram limitation) — this workflow owns the bot.
-// NOTE: Telegram Trigger is webhook-based, so real button clicks need a public
-// URL (cloudflared quick tunnel) before the workflow can be activated.
+// UX rework (2026-09-14, this version — 73 nodes):
+//   - sched/manual ask via NEW MESSAGE with a cancel button, not popup alerts
+//   - 60s timeout: stale pending state is cleared + «کنسل شد» message
+//   - Edit Message Regen/Manual null-guard publish_at (epoch bug, exec 132)
+//   - add flow: repo link → choice message → addgen (LLM chain) or
+//     addmanual (isolated manual chain: Build Add Manual From Text →
+//     Fetch Add Manual Metadata → … no LLM involved)
+//   - Fetch Add Readme reads $json.full_name (came from Fetch Repo Metadata),
+//     NOT $('Parse Add URL') — that node never runs in the callback execution
+//   - Send Add Choice has NO outgoing edge to Fetch Repo Metadata (that stale
+//     edge caused instant 404s: telegram response {ok,result} has no full_name)
 //
 // Nodes in n8n (id=Zro6k6d8JcAOOpfn) are the source of truth for execution;
-// this file mirrors them for review and rebuilds. The live tests of the text
-// routes are executions 126–135 (2026-09-09); the five bugs found there are
-// fixed in this version:
-//   - $env blocked in expressions → container rebuilt with
-//     N8N_BLOCK_ENV_ACCESS_IN_NODE=false (not this file)
-//   - callback_data lived in additionalFields where the send expression could
-//     not see it → Render Waiting List now puts callback_data on the button itself
-//   - jsonb_array_elements got a single object → Upsert Add Repo wraps the
-//     repoJson in an array inside queryReplacement
-//   - postId read from static data in manual runs → Update Publish At reads
-//     the paired item from Route Text
-//   - new Date(null) = Unix epoch (11 Dey 1348!) → fa() null-guard in Render
+// this file mirrors them for review and rebuilds. Live tests: executions
+// 126–135 (text routes, 2026-09-09), 136 (VM buttons), 144–148 (UX rework).
 
 import {
   workflow, trigger, node, sticky, switchCase, if as ifNode, expr,
@@ -95,6 +95,9 @@ const routeUpdate = switchCase({
 });
 
 // Parse Callback — split "ok:123" style prefixes into branches.
+// Output order MUST match n8n: ok, rej, regen, manual, sched, addgen,
+// addmanual, cancel, fallback=Unknown. addgen carries the full repo name
+// after the colon ("addgen:owner/repo"), because the callback knows no ids.
 const parseCallback = switchCase({
   version: 3.4,
   config: {
@@ -102,7 +105,7 @@ const parseCallback = switchCase({
     position: [384, -576],
     parameters: {
       rules: {
-        values: ['ok', 'rej', 'regen', 'manual', 'sched'].map((k) => ({
+        values: ['ok', 'rej', 'regen', 'manual', 'sched', 'addgen', 'addmanual', 'cancel'].map((k) => ({
           conditions: {
             options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' },
             conditions: [{
@@ -524,7 +527,7 @@ const editRegen = node({
   version: 1.2,
   config: {
     name: 'Edit Message Regen',
-    position: [2512, -672],
+    position: [2560, -1312],
     parameters: {
       resource: 'message',
       operation: 'editMessageText',
@@ -532,7 +535,10 @@ const editRegen = node({
       chatId: expr("{{ $('Load Post').first().json.bot_chat_id }}"),
       messageId: expr("{{ String($('Load Post').first().json.bot_message_id) }}"),
       replyMarkup: 'inlineKeyboard',
-      text: expr("{{ $('Assemble Regen').first().json.caption + String.fromCharCode(10) + String.fromCharCode(10) + '🕒 زمان انتشار: ' + new Date($('Load Post').first().json.publish_at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + String.fromCharCode(10) + '⚠️ اگر هیچی لمس نکنی، همین کپشن در همین زمان منتشر می‌شود.' }}"),
+      // Null-guard BEFORE new Date: publish_at=NULL + new Date(null) = Unix
+      // epoch, rendered as «۱۱ دی ۱۳۴۸» (the regen bug). Regen must never
+      // touch publish_at — only caption and attempt.
+      text: expr("{{ $('Assemble Regen').first().json.caption + String.fromCharCode(10) + String.fromCharCode(10) + ($('Load Post').first().json.publish_at ? '🕒 زمان انتشار: ' + new Date($('Load Post').first().json.publish_at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + String.fromCharCode(10) + '⚠️ اگر هیچی لمس نکنی، همین کپشن در همین زمان منتشر می‌شود.' : '🕓 این پست هنوز زمان انتشار ندارد. برای تعیین زمان، «لیست انتظار» را بفرست.') }}"),
       inlineKeyboard: {
         rows: [
           {
@@ -560,22 +566,30 @@ const editRegen = node({
 });
 
 // ---------------------------------------------------------------------------
-// MANUAL branch — mark pending, the user's next text becomes the caption.
+// MANUAL branch (button "manual:<id>") — ask via a NEW MESSAGE with a cancel
+// button (UX rework: no popup), mark pending; the user's next text becomes
+// the caption.
 // ---------------------------------------------------------------------------
-const answerManual = node({
+const askManualCaption = node({
   type: 'n8n-nodes-base.telegram',
   version: 1.2,
   config: {
-    name: 'Answer Manual',
-    position: [784, -448],
+    name: 'Ask Manual Caption',
+    position: [848, -1056],
     parameters: {
-      resource: 'callback',
-      operation: 'answerQuery',
-      queryId: expr('{{ $json.queryId }}'),
-      additionalFields: {
-        show_alert: true,
-        text: 'کپشن جدید را همین‌جا در چت بنویس و بفرست. برای انصراف دستور «انصراف» را بفرست.',
+      chatId: OWNER_CHAT,
+      text: '✍️ لطفا کپشن جدید خود را ارسال کنید. برای انصراف روی دکمه بزنید یا دستور «انصراف» را بفرست.',
+      replyMarkup: 'inlineKeyboard',
+      inlineKeyboard: {
+        rows: [
+          {
+            row: {
+              buttons: [{ text: 'انصراف', additionalFields: { callback_data: 'cancel:0' } }],
+            },
+          },
+        ],
       },
+      additionalFields: { appendAttribution: false },
     },
     credentials: { telegramApi: { id: 'HbsVKNilG8EOy02X', name: 'Telegram account' } },
   },
@@ -586,19 +600,23 @@ const setPendingPost = node({
   version: 2,
   config: {
     name: 'Set Pending Post',
-    position: [976, -448],
+    position: [1072, -1056],
     parameters: {
       mode: 'runOnceForAllItems',
       jsCode: `const sd = $getWorkflowStaticData('global');
-sd.pendingPostId = Number($json.callbackData.split(':')[1] ?? 0);
-sd.pendingSavedAt = new Date().toISOString();
+sd.pendingPostId = Number($('Parse Update').first().json.callbackData.split(':')[1] ?? 0);
+sd.pendingChatId = $('Parse Update').first().json.chatId;
+sd.pendingSavedAt = Date.now();
 return $input.all();`,
     },
   },
 });
 
 // ---------------------------------------------------------------------------
-// Text routing — «لیست انتظار» / «افزودن» / cancel / pending flows.
+// Text routing — cancel first, then FRESH pending flows (<60s), then the
+// keyword/URL commands. Stale pending state is reported via timedOut and the
+// unknown fallback (output 6) leads to Check Pending Timeout, which clears it
+// and tells the user.
 // ---------------------------------------------------------------------------
 const routeText = node({
   type: 'n8n-nodes-base.code',
@@ -611,29 +629,34 @@ const routeText = node({
       jsCode: `const u = $('Parse Update').first().json;
 const sd = $getWorkflowStaticData('global');
 const text = String(u.text ?? '').trim();
-const pending = sd.pendingPostId ?? null;
-const pendingSched = sd.pendingSchedId ?? null;
+const TIMEOUT = 60000;
+const fresh = sd.pendingSavedAt && (Date.now() - sd.pendingSavedAt) < TIMEOUT;
+const pendingPostId = fresh ? (sd.pendingPostId ?? null) : null;
+const pendingSchedId = fresh ? (sd.pendingSchedId ?? null) : null;
+const pendingAddRepo = fresh ? (sd.pendingAddRepo ?? null) : null;
 let route = 'unknown';
 if (/انصراف/.test(text)) route = 'cancel';
+else if (pendingSchedId) route = 'schedtime';
+else if (pendingAddRepo) route = 'addmanualcaption';
+else if (pendingPostId) route = 'manualcaption';
 else if (/لیست انتظار/.test(text)) route = 'waitlist';
-else if (/افزودن/.test(text) || sd.pendingAdd || /github\\.com\\/[\\w.-]+\\/[\\w.-]+/.test(text)) route = 'addlist';
-else if (pendingSched) route = 'schedtime';
-else if (pending) route = 'manualcaption';
-return [{ json: { route, text, pendingPostId: pending, pendingSchedId: pendingSched, chatId: u.chatId } }];`,
+else if (/github\\.com\\/[\\w.-]+\\/[\\w.-]+/.test(text)) route = 'addlist';
+return [{ json: { route, text, pendingPostId, pendingSchedId, pendingAddRepo, timedOut: !fresh && !!sd.pendingSavedAt, chatId: u.chatId } }];`,
     },
   },
 });
 
-// Route Manual Or Cancel — output 0 manualcaption, 1 cancel, 2 schedtime,
-// 3 waitlist, 4 addlist, fallback "Other Text" (unconnected).
+// Route Manual Or Cancel — output order MUST match n8n:
+// 0 cancel, 1 manualcaption, 2 schedtime, 3 waitlist, 4 addlist,
+// 5 addmanualcaption, fallback "Other Text" (→ Check Pending Timeout).
 const routeManualOrCancel = switchCase({
   version: 3.4,
   config: {
     name: 'Route Manual Or Cancel',
-    position: [784, 752],
+    position: [784, 736],
     parameters: {
       rules: {
-        values: ['manualcaption', 'cancel', 'schedtime', 'waitlist', 'addlist'].map((k) => ({
+        values: ['cancel', 'manualcaption', 'schedtime', 'waitlist', 'addlist', 'addmanualcaption'].map((k) => ({
           conditions: {
             options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' },
             conditions: [{
@@ -674,11 +697,14 @@ const clearPending = node({
   version: 2,
   config: {
     name: 'Clear Pending',
-    position: [1536, 208],
+    position: [1504, 512],
     parameters: {
       mode: 'runOnceForAllItems',
       jsCode: `const sd = $getWorkflowStaticData('global');
 delete sd.pendingPostId;
+delete sd.pendingSchedId;
+delete sd.pendingAddRepo;
+delete sd.pendingChatId;
 delete sd.pendingSavedAt;
 return [{ json: { cleared: true, postId: $json.pendingPostId } }];`,
     },
@@ -716,7 +742,7 @@ const editManual = node({
       chatId: expr("{{ $('Load Manual Post').first().json.bot_chat_id }}"),
       messageId: expr("{{ String($('Load Manual Post').first().json.bot_message_id) }}"),
       replyMarkup: 'inlineKeyboard',
-      text: expr("{{ $('Load Manual Post').first().json.caption + String.fromCharCode(10) + String.fromCharCode(10) + '🕒 زمان انتشار: ' + new Date($('Load Manual Post').first().json.publish_at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + String.fromCharCode(10) + '⚠️ اگر هیچی لمس نکنی، همین کپشن در همین زمان منتشر می‌شود.' }}"),
+      text: expr("{{ $('Load Manual Post').first().json.caption + String.fromCharCode(10) + String.fromCharCode(10) + ($('Load Manual Post').first().json.publish_at ? '🕒 زمان انتشار: ' + new Date($('Load Manual Post').first().json.publish_at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + String.fromCharCode(10) + '⚠️ اگر هیچی لمس نکنی، همین کپشن در همین زمان منتشر می‌شود.' : '🕓 این پست هنوز زمان انتشار ندارد. برای تعیین زمان، «لیست انتظار» را بفرست.') }}"),
       inlineKeyboard: {
         rows: [
           {
@@ -748,10 +774,10 @@ const sendCancelled = node({
   version: 1.2,
   config: {
     name: 'Send Cancelled',
-    position: [1328, 432],
+    position: [1040, 272],
     parameters: {
       chatId: OWNER_CHAT,
-      text: 'انصراف ثبت شد. کپشن پیش از این دست نخورده است.',
+      text: 'انصراف ثبت شد. عملیات کنسل شد و چیزی تغییر نکرد.',
       additionalFields: { appendAttribution: false },
     },
     credentials: { telegramApi: { id: 'HbsVKNilG8EOy02X', name: 'Telegram account' } },
@@ -763,16 +789,61 @@ const clearPendingCancel = node({
   version: 2,
   config: {
     name: 'Clear Pending Cancel',
-    position: [1536, 432],
+    position: [1216, 272],
     parameters: {
       mode: 'runOnceForAllItems',
       jsCode: `const sd = $getWorkflowStaticData('global');
 delete sd.pendingSchedId;
 delete sd.pendingPostId;
-delete sd.pendingAdd;
+delete sd.pendingAddRepo;
+delete sd.pendingChatId;
 delete sd.pendingSavedAt;
 return [{ json: { cleared: true } }];`,
     },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Timeout sweeper — the fallback "Other Text" branch lands here. If a pending
+// state is older than 60s it is cleared and the user is told; otherwise the
+// node is a silent no-op (stale=false → Send Timed Out still sends, see n8n).
+// ---------------------------------------------------------------------------
+const checkPendingTimeout = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Check Pending Timeout',
+    position: [1280, 1680],
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: `const sd = $getWorkflowStaticData('global');
+const TIMEOUT = 60000;
+const wasPending = !!sd.pendingSavedAt;
+const stale = wasPending && (Date.now() - sd.pendingSavedAt) > TIMEOUT;
+if (stale) {
+  delete sd.pendingPostId;
+  delete sd.pendingSchedId;
+  delete sd.pendingAddRepo;
+  delete sd.pendingChatId;
+  delete sd.pendingSavedAt;
+}
+return [{ json: { stale, pendingChatId: sd.pendingChatId ?? null } }];`,
+    },
+  },
+});
+
+const sendTimedOut = node({
+  type: 'n8n-nodes-base.telegram',
+  version: 1.2,
+  config: {
+    name: 'Send Timed Out',
+    position: [1488, 1680],
+    parameters: {
+      chatId: OWNER_CHAT,
+      text: '⌛️ یک دقیقه گذشت و پاسخی نرسید. عملیات کنسل شد.',
+      additionalFields: { appendAttribution: false },
+    },
+    credentials: { telegramApi: { id: 'HbsVKNilG8EOy02X', name: 'Telegram account' } },
   },
 });
 
@@ -839,23 +910,50 @@ const sendWaitingList = node({
 });
 
 // ---------------------------------------------------------------------------
-// SCHED branch — button "sched:<id>" from the waiting list, then the next
-// text message is parsed as a Persian time expression.
+// SCHED branch — button "sched:<id>" from the waiting list. UX rework: a NEW
+// MESSAGE shows the repo name + current time + cancel button (not a popup);
+// the user's next text is parsed as a Persian time expression.
 // ---------------------------------------------------------------------------
-const answerSched = node({
+const loadSchedPost = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.6,
+  config: {
+    name: 'Load Sched Post',
+    position: [848, -800],
+    parameters: {
+      operation: 'executeQuery',
+      query: `SELECT p.id, p.publish_at, r.full_name
+  FROM posts p JOIN repositories r ON r.id = p.repository_id
+ WHERE p.id = $1::bigint AND p.status = 'draft';`,
+      options: {
+        queryReplacement: expr('{{ [ Number($("Parse Update").first().json.callbackData.split(":")[1] ?? 0) ] }}'),
+        largeNumbersOutput: 'numbers',
+      },
+    },
+    credentials: { postgres: { id: 'AGFlith4Bqghumgo', name: 'Postgres account' } },
+  },
+});
+
+const askSchedTime = node({
   type: 'n8n-nodes-base.telegram',
   version: 1.2,
   config: {
-    name: 'Answer Sched',
-    position: [784, -224],
+    name: 'Ask Sched Time',
+    position: [1056, -800],
     parameters: {
-      resource: 'callback',
-      operation: 'answerQuery',
-      queryId: expr('{{ $json.queryId }}'),
-      additionalFields: {
-        show_alert: true,
-        text: 'زمان جدید را همین‌جا بنویس و بفرست. مثال: «فردا ساعت ۱۸» یا «۱۴۰۵/۰۶/۲۰ ساعت ۱۸:۳۰». برای انصراف دستور «انصراف» را بفرست.',
+      chatId: OWNER_CHAT,
+      text: expr("{{ '🕒 تغییر زمان انتشار' + String.fromCharCode(10) + 'ریپو: <b>' + $json.full_name + '</b>' + String.fromCharCode(10) + 'زمان فعلی: ' + ($json.publish_at ? new Date($json.publish_at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'بدون زمان') + String.fromCharCode(10) + String.fromCharCode(10) + 'زمان جدید را در پیام بعدی بفرست. مثال: «فردا ساعت ۱۸» یا «۱۴۰۵/۰۶/۲۰ ساعت ۱۸:۳۰»' }}"),
+      replyMarkup: 'inlineKeyboard',
+      inlineKeyboard: {
+        rows: [
+          {
+            row: {
+              buttons: [{ text: 'انصراف', additionalFields: { callback_data: 'cancel:0' } }],
+            },
+          },
+        ],
       },
+      additionalFields: { appendAttribution: false, parse_mode: 'HTML' },
     },
     credentials: { telegramApi: { id: 'HbsVKNilG8EOy02X', name: 'Telegram account' } },
   },
@@ -866,12 +964,13 @@ const setPendingSched = node({
   version: 2,
   config: {
     name: 'Set Pending Sched',
-    position: [976, -224],
+    position: [1248, -800],
     parameters: {
       mode: 'runOnceForAllItems',
       jsCode: `const sd = $getWorkflowStaticData('global');
-sd.pendingSchedId = Number($json.callbackData.split(':')[1] ?? 0);
-sd.pendingSavedAt = new Date().toISOString();
+sd.pendingSchedId = Number($('Load Sched Post').first().json.id);
+sd.pendingChatId = $('Parse Update').first().json.chatId;
+sd.pendingSavedAt = Date.now();
 return $input.all();`,
     },
   },
@@ -999,12 +1098,12 @@ const clearPendingSched = node({
   version: 2,
   config: {
     name: 'Clear Pending Sched',
-    position: [1728, 624],
+    position: [1680, 704],
     parameters: {
       mode: 'runOnceForAllItems',
       jsCode: `const sd = $getWorkflowStaticData('global');
 delete sd.pendingSchedId;
-delete sd.pendingPostId;
+delete sd.pendingChatId;
 delete sd.pendingSavedAt;
 return [{ json: { cleared: true, postId: $json.postId } }];`,
     },
@@ -1036,7 +1135,7 @@ const parseAddUrl = node({
   version: 2,
   config: {
     name: 'Parse Add URL',
-    position: [1328, 1024],
+    position: [1280, 1168],
     parameters: {
       mode: 'runOnceForAllItems',
       jsCode: `const rt = $('Route Text').first().json;
@@ -1054,7 +1153,7 @@ const checkAddUrl = ifNode({
   version: 2.2,
   config: {
     name: 'Check Add URL',
-    position: [1456, 1024],
+    position: [1504, 1168],
     parameters: {
       conditions: {
         combinator: 'and',
@@ -1085,12 +1184,65 @@ const sendBadUrl = node({
   },
 });
 
+// ---------------------------------------------------------------------------
+// ADD flow, reworked (2026-09-14). A github.com link produces a CHOICE
+// message with two buttons: «ساخت کپشن» (addgen:owner/repo) and
+// «ارسال کپشن» (addmanual:owner/repo). NO node after Send Add Choice runs
+// in the text execution — a stale edge to Fetch Repo Metadata caused 404s
+// (telegram response has no full_name) and was removed.
+// ---------------------------------------------------------------------------
+const sendAddChoice = node({
+  type: 'n8n-nodes-base.telegram',
+  version: 1.2,
+  config: {
+    name: 'Send Add Choice',
+    position: [1776, 1104],
+    parameters: {
+      chatId: OWNER_CHAT,
+      text: expr("{{ 'انتخاب کنید:' + String.fromCharCode(10) + 'ریپو: <b>' + $json.full_name + '</b>' }}"),
+      replyMarkup: 'inlineKeyboard',
+      inlineKeyboard: {
+        rows: [
+          {
+            row: {
+              buttons: [
+                { text: 'ساخت کپشن', additionalFields: { callback_data: expr("{{ 'addgen:' + $json.full_name }}") } },
+                { text: 'ارسال کپشن', additionalFields: { callback_data: expr("{{ 'addmanual:' + $json.full_name }}") } },
+              ],
+            },
+          },
+        ],
+      },
+      additionalFields: { appendAttribution: false, parse_mode: 'HTML' },
+    },
+    credentials: { telegramApi: { id: 'HbsVKNilG8EOy02X', name: 'Telegram account' } },
+  },
+});
+
+// addgen callback → extract full_name from the callback data and jump into
+// the shared LLM chain. The text-execution nodes (Parse Add URL etc.) never
+// ran in this execution, so their output must not be referenced downstream.
+const buildAddFromCallback = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Build Add From Callback',
+    position: [848, -544],
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: `const cb = String($('Parse Update').first().json.callbackData ?? '');
+const full_name = cb.split(':').slice(1).join(':');
+return [{ json: { ok: true, full_name, owner: full_name.split('/')[0], repo: full_name.split('/')[1] ?? '' } }];`,
+    },
+  },
+});
+
 const fetchRepoMetadata = node({
   type: 'n8n-nodes-base.httpRequest',
   version: 4.5,
   config: {
     name: 'Fetch Repo Metadata',
-    position: [1856, 1008],
+    position: [1072, -544],
     parameters: {
       url: expr("{{ 'https://api.github.com/repos/' + $json.full_name }}"),
       authentication: 'predefinedCredentialType',
@@ -1101,14 +1253,17 @@ const fetchRepoMetadata = node({
   },
 });
 
+// Reads $json.full_name (the metadata output), NOT $('Parse Add URL') — in
+// the addgen callback execution Parse Add URL never runs and referencing it
+// throws "Node hasn't been executed".
 const fetchAddReadme = node({
   type: 'n8n-nodes-base.httpRequest',
   version: 4.5,
   config: {
     name: 'Fetch Add Readme',
-    position: [2064, 1008],
+    position: [1280, -544],
     parameters: {
-      url: expr("{{ 'https://api.github.com/repos/' + $('Parse Add URL').first().json.full_name + '/readme' }}"),
+      url: expr("{{ 'https://api.github.com/repos/' + $json.full_name + '/readme' }}"),
       authentication: 'predefinedCredentialType',
       nodeCredentialType: 'githubApi',
       sendHeaders: true,
@@ -1447,7 +1602,7 @@ const saveAddBotMessage = node({
   version: 2.7,
   config: {
     name: 'Save Add Bot Message',
-    position: [3792, 1008],
+    position: [3008, -544],
     parameters: {
       operation: 'executeQuery',
       query: 'UPDATE posts SET bot_chat_id = $1, bot_message_id = $2 WHERE id = $3::bigint;',
@@ -1461,16 +1616,259 @@ const saveAddBotMessage = node({
 });
 
 // ---------------------------------------------------------------------------
-// Wiring
+// ADD-MANUAL chain (addmanual:<owner/repo> button) — fully isolated from the
+// LLM chain. Callback stores the repo name in static data and asks for the
+// caption; the user's next text (route=addmanualcaption) rebuilds the repo
+// name, fetches metadata through a SEPARATE HTTP node (Fetch Add Manual
+// Metadata — Fetch Repo Metadata is not part of this execution), upserts
+// source='submission' and saves the user's text as the caption verbatim.
+// ---------------------------------------------------------------------------
+const setPendingAddManual = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Set Pending Add Manual',
+    position: [848, -352],
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: `const sd = $getWorkflowStaticData('global');
+sd.pendingAddRepo = String($('Parse Update').first().json.callbackData.split(':').slice(1).join(':'));
+sd.pendingChatId = $('Parse Update').first().json.chatId;
+sd.pendingSavedAt = Date.now();
+return $input.all();`,
+    },
+  },
+});
+
+const askAddManualCaption = node({
+  type: 'n8n-nodes-base.telegram',
+  version: 1.2,
+  config: {
+    name: 'Ask Add Manual Caption',
+    position: [1072, -352],
+    parameters: {
+      chatId: OWNER_CHAT,
+      text: '✍️ لطفا کپشن خود را ارسال کنید. برای انصراف روی دکمه بزنید یا دستور «انصراف» را بفرست.',
+      replyMarkup: 'inlineKeyboard',
+      inlineKeyboard: {
+        rows: [
+          {
+            row: {
+              buttons: [{ text: 'انصراف', additionalFields: { callback_data: 'cancel:0' } }],
+            },
+          },
+        ],
+      },
+      additionalFields: { appendAttribution: false },
+    },
+    credentials: { telegramApi: { id: 'HbsVKNilG8EOy02X', name: 'Telegram account' } },
+  },
+});
+
+const buildAddManualFromText = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Build Add Manual From Text',
+    position: [1280, 1472],
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: `const sd = $getWorkflowStaticData('global');
+const full_name = String(sd.pendingAddRepo ?? '');
+delete sd.pendingAddRepo;
+delete sd.pendingChatId;
+delete sd.pendingSavedAt;
+if (!full_name) { throw new Error('pendingAddRepo not found in static data. Send the repo link again.'); }
+return [{ json: { ok: true, full_name, owner: full_name.split('/')[0], repo: full_name.split('/')[1] ?? '' } }];`,
+    },
+  },
+});
+
+const fetchAddManualMetadata = node({
+  type: 'n8n-nodes-base.httpRequest',
+  version: 4.5,
+  config: {
+    name: 'Fetch Add Manual Metadata',
+    position: [1472, 1472],
+    parameters: {
+      url: expr("{{ 'https://api.github.com/repos/' + $json.full_name }}"),
+      authentication: 'predefinedCredentialType',
+      nodeCredentialType: 'githubApi',
+      options: { timeout: 30000 },
+    },
+    credentials: { githubApi: { id: 'AhHaIlNoT3GchOi5', name: 'GitHub account' } },
+  },
+});
+
+const buildAddManualSave = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Build Add Manual Save',
+    position: [1664, 1472],
+    parameters: {
+      mode: 'runOnceForAllItems',
+      jsCode: `const repo = $('Fetch Add Manual Metadata').first().json;
+return [{ json: { repoJson: JSON.stringify({
+  github_id: repo.id,
+  full_name: repo.full_name,
+  owner: repo.owner?.login ?? '',
+  name: repo.name ?? '',
+  url: repo.html_url ?? '',
+  description: repo.description ?? null,
+  homepage: repo.homepage ?? null,
+  stars: repo.stargazers_count ?? 0,
+  forks: repo.forks_count ?? 0,
+  open_issues: repo.open_issues_count ?? 0,
+  language: repo.language ?? null,
+  topics: repo.topics ?? [],
+  license_spdx: repo.license?.spdx_id ?? null,
+  license_name: repo.license?.name ?? null,
+  is_fork: repo.fork ?? false,
+  is_archived: repo.archived ?? false,
+  is_template: repo.is_template ?? false,
+  default_branch: repo.default_branch ?? null,
+  created_at: repo.created_at ?? null,
+  pushed_at: repo.pushed_at ?? null,
+}), caption: $('Route Text').first().json.text } }];`,
+    },
+  },
+});
+
+const upsertAddManualRepo = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.6,
+  config: {
+    name: 'Upsert Add Manual Repo',
+    position: [1872, 1472],
+    parameters: {
+      operation: 'executeQuery',
+      query: `INSERT INTO repositories (
+  github_id, full_name, owner, name, url, description, homepage,
+  stars, forks, open_issues, language, topics, license_spdx, license_name,
+  is_fork, is_archived, is_template, default_branch, gh_created_at, gh_pushed_at, source
+) SELECT
+  (r->>'github_id')::bigint, r->>'full_name', r->>'owner', r->>'name', r->>'url',
+  r->>'description', r->>'homepage',
+  (r->>'stars')::int, (r->>'forks')::int, (r->>'open_issues')::int,
+  r->>'language', to_jsonb(r->'topics'), r->>'license_spdx', r->>'license_name',
+  (r->>'is_fork')::boolean, (r->>'is_archived')::boolean, (r->>'is_template')::boolean,
+  r->>'default_branch', (r->>'created_at')::timestamptz, (r->>'pushed_at')::timestamptz, 'submission'
+FROM jsonb_array_elements($1::jsonb) AS r
+ON CONFLICT (github_id) DO UPDATE SET
+  full_name = EXCLUDED.full_name,
+  description = EXCLUDED.description,
+  homepage = EXCLUDED.homepage,
+  stars = EXCLUDED.stars,
+  forks = EXCLUDED.forks,
+  open_issues = EXCLUDED.open_issues,
+  language = EXCLUDED.language,
+  topics = EXCLUDED.topics,
+  license_spdx = EXCLUDED.license_spdx,
+  license_name = EXCLUDED.license_name,
+  is_archived = EXCLUDED.is_archived,
+  gh_pushed_at = EXCLUDED.gh_pushed_at,
+  last_checked = now()
+RETURNING id;`,
+      options: {
+        queryReplacement: expr('{{ [ JSON.stringify([ JSON.parse($json.repoJson) ]) ] }}'),
+        largeNumbersOutput: 'numbers',
+        queryBatching: 'single',
+      },
+    },
+    credentials: { postgres: { id: 'AGFlith4Bqghumgo', name: 'Postgres account' } },
+  },
+});
+
+const saveAddManualPost = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.6,
+  config: {
+    name: 'Save Add Manual Post',
+    position: [2080, 1472],
+    parameters: {
+      operation: 'executeQuery',
+      query: `INSERT INTO posts (repository_id, caption, status)
+SELECT $1::bigint, $2, 'draft'
+RETURNING id;`,
+      options: {
+        queryReplacement: expr('{{ [ $("Upsert Add Manual Repo").first().json.id, $("Build Add Manual Save").first().json.caption ] }}'),
+        largeNumbersOutput: 'numbers',
+      },
+    },
+    credentials: { postgres: { id: 'AGFlith4Bqghumgo', name: 'Postgres account' } },
+  },
+});
+
+const sendAddManualPreview = node({
+  type: 'n8n-nodes-base.telegram',
+  version: 1.2,
+  config: {
+    name: 'Send Add Manual Preview',
+    position: [2288, 1472],
+    parameters: {
+      chatId: OWNER_CHAT,
+      text: expr("{{ $('Build Add Manual Save').first().json.caption + String.fromCharCode(10) + String.fromCharCode(10) + '🕓 این پست هنوز زمان انتشار ندارد. برای تعیین زمان، «لیست انتظار» را بفرست و روی همین پست بزن.' }}"),
+      replyMarkup: 'inlineKeyboard',
+      inlineKeyboard: {
+        rows: [
+          {
+            row: {
+              buttons: [
+                { text: '✅ تایید', additionalFields: { callback_data: expr("{{ 'ok:' + $('Save Add Manual Post').first().json.id }}") } },
+                { text: '❌ رد', additionalFields: { callback_data: expr("{{ 'rej:' + $('Save Add Manual Post').first().json.id }}") } },
+              ],
+            },
+          },
+          {
+            row: {
+              buttons: [
+                { text: '🔄 ساخت دوباره کپشن', additionalFields: { callback_data: expr("{{ 'regen:' + $('Save Add Manual Post').first().json.id }}") } },
+                { text: '✍️ نوشتن دستی', additionalFields: { callback_data: expr("{{ 'manual:' + $('Save Add Manual Post').first().json.id }}") } },
+              ],
+            },
+          },
+        ],
+      },
+      additionalFields: { appendAttribution: false, disable_web_page_preview: true, parse_mode: 'HTML' },
+    },
+    credentials: { telegramApi: { id: 'HbsVKNilG8EOy02X', name: 'Telegram account' } },
+  },
+});
+
+const saveAddManualBotMessage = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.6,
+  config: {
+    name: 'Save Add Manual Bot Message',
+    position: [2496, 1472],
+    parameters: {
+      operation: 'executeQuery',
+      query: 'UPDATE posts SET bot_chat_id = $1, bot_message_id = $2 WHERE id = $3::bigint;',
+      options: {
+        queryReplacement: expr('{{ [ String($("Send Add Manual Preview").first().json.result.chat.id), Number($("Send Add Manual Preview").first().json.result.message_id), $("Save Add Manual Post").first().json.id ] }}'),
+        largeNumbersOutput: 'numbers',
+      },
+    },
+    credentials: { postgres: { id: 'AGFlith4Bqghumgo', name: 'Postgres account' } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Wiring — mirrors the live 73-node workflow exactly.
+// Parse Callback outputs: 0 ok, 1 rej, 2 regen, 3 manual, 4 sched,
+// 5 addgen, 6 addmanual, 7 cancel, 8 unknown.
+// Route Manual Or Cancel outputs: 0 cancel, 1 manualcaption, 2 schedtime,
+// 3 waitlist, 4 addlist, 5 addmanualcaption, fallback → Check Pending Timeout.
 // ---------------------------------------------------------------------------
 const noteMain = sticky(
-  '## Pure GitHub — Telegram Bot\n\nربات بازبینی: ۴ دکمه‌ی اینلاین (تایید/رد/بازساخت/دستی)، لیست انتظار با کیبورد داینامیک، افزودن به لیست با لینک GitHub، تغییر زمان انتشار با متن فارسی.',
+  '## Pure GitHub — Telegram Bot\n\nربات بازبینی: ۴ دکمه‌ی اینلاین، لیست انتظار، افزودن با لینک GitHub (انتخاب ساخت/ارسال کپشن)، تغییر زمان، انصراف و انقضای ۶۰ ثانیه‌ای.',
   [botTrigger],
   { color: 5 },
 );
 
 const noteButtons = sticky(
-  'Parse Callback outputs:\n0 -> OK (post untouched, published at publish_at)\n1 -> REJECT (status=rejected, buttons dropped)\n2 -> REGEN (LLM regenerates caption)\n3 -> MANUAL (next text = caption)\n4 -> SCHED (from waiting-list buttons)',
+  'Parse Callback outputs:\n0 ok (post untouched)\n1 rej (status=rejected)\n2 regen (LLM regenerates)\n3 manual (next text = caption)\n4 sched (waiting-list time)\n5 addgen (LLM caption)\n6 addmanual (user caption)\n7 cancel',
   [parseCallback],
   { color: 6 },
 );
@@ -1490,20 +1888,27 @@ export default workflow('puregh-telegram-bot', 'Pure GitHub — Telegram Bot')
           .withModel(regenModelFallback, 1)
           .withParser(regenSchema))
         .to(assembleRegen).to(saveRegen).to(editRegen))
-      .onCase(3, answerManual.to(setPendingPost))
-      .onCase(4, answerSched.to(setPendingSched))
-      .onCase(5, answerUnknown)))
+      .onCase(3, askManualCaption.to(setPendingPost))
+      .onCase(4, loadSchedPost.to(askSchedTime).to(setPendingSched))
+      .onCase(5, buildAddFromCallback.to(fetchRepoMetadata).to(fetchAddReadme).to(buildAddFacts)
+        .to(generateAddCaption
+          .withModel(addModelPrimary)
+          .withModel(addModelFallback, 1)
+          .withParser(addSchema))
+        .to(assembleAddCaption).to(buildAddSave).to(upsertAddRepo).to(saveAddPost)
+        .to(sendAddPreview).to(saveAddBotMessage))
+      .onCase(6, setPendingAddManual.to(askAddManualCaption))
+      .onCase(7, sendCancelled.to(clearPendingCancel))
+      .onCase(8, answerUnknown)))
     .onCase(1, routeText.to(routeManualOrCancel
-      .onCase(0, saveManualCaption.to(clearPending).to(loadManualPost).to(editManual))
-      .onCase(1, sendCancelled.to(clearPendingCancel))
+      .onCase(0, sendCancelled.to(clearPendingCancel))
+      .onCase(1, saveManualCaption.to(clearPending).to(loadManualPost).to(editManual))
       .onCase(2, parseTime.to(updatePublishAt).to(clearPendingSched).to(sendSchedDone))
       .onCase(3, queryWaitingList.to(renderWaitingList).to(sendWaitingList))
       .onCase(4, parseAddUrl.to(checkAddUrl
-        .whenTrue(fetchRepoMetadata.to(fetchAddReadme).to(buildAddFacts)
-          .to(generateAddCaption
-            .withModel(addModelPrimary)
-            .withModel(addModelFallback, 1)
-            .withParser(addSchema))
-          .to(assembleAddCaption).to(buildAddSave).to(upsertAddRepo).to(saveAddPost)
-          .to(sendAddPreview).to(saveAddBotMessage))
-        .whenFalse(sendBadUrl)))));
+        .whenTrue(sendAddChoice)
+        .whenFalse(sendBadUrl)))
+      .onCase(5, buildAddManualFromText.to(fetchAddManualMetadata).to(buildAddManualSave)
+        .to(upsertAddManualRepo).to(saveAddManualPost).to(sendAddManualPreview)
+        .to(saveAddManualBotMessage))
+      .onFallback(checkPendingTimeout.to(sendTimedOut))));
