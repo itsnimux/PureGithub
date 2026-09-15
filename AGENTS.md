@@ -1423,3 +1423,44 @@ Publisher (`1tVlx8NwE7Qe4WWa`).
 - لپ‌تاپ: کانتینرهای n8n متوقف شد؛ DB لپ‌تاپ باز دست‌نخورده است (بکاپ‌های
   `/tmp/puregh-backup.dump` و `/tmp/n8n-data-original.tar.gz` — موقتی‌اند).
   برای پاک‌کردن لپ‌تاپ بعداً تصمیم بگیر.
+
+## ۲۳) مینی‌اپ تلگرام (جایگزین فرم بازبینی n8n) — در حال ساخت (۲۰۲۶-۰۹-۱۶)
+
+کاربر تصمیم گرفت بازبینی به‌جای فرم n8n، یک **Telegram Mini App** (WebApp) باشد.
+کد: `puregh-miniapp/` (React/Vite فرانت + Express بک‌اند + اسکریپت راه‌اندازی
+ربات که دکمه‌ی باز کردن اپ را می‌فرستد). هنوز `active` نیست؛ اپ از طریق
+**tunnel cloudflared** به بک‌اند لوکال می‌رسد و ربات `@puregithubbot` از VM
+می‌تواند WebApp باز کند. **این مرحله در حال توسعه روی لپ‌تاپ است** — n8n اصلی
+روی VM `nimux` دست نمی‌خورد.
+
+### معماری
+- بک‌اند Express روی `127.0.0.1:3001`، DB = همان `puregh` (روی VM، از طریق SSH
+  forward). استاتیک فرانت از `frontend/dist`.
+- تأیید WebApp: `initdata.js` با `HMAC_SHA256(key="WebAppData", message=bot_token)`
+  روی data_check_string رشته‌ی URL-decoded و مرتبِ همه فیلدها به‌جز `hash`.
+- ربات (اسکریپت جدا) دکمه‌ی WebApp دارد: `start` → کیلوگرام «باز کردن بازبینی».
+- Owner chat id و همه تنظیمات در `backend/.env` (نه committed).
+
+### فایل‌های کلیدی
+- `puregh-miniapp/backend/src/security/initdata.js` — اعتبارسنجی initData
+- `puregh-miniapp/backend/src/routes.js` — API (لیست انتظار، post، approve، reject، schedule)
+- `puregh-miniapp/frontend/src/pages/PostDetail.jsx` — صفحه‌ی جزئیات پست
+- `puregh-miniapp/frontend/src/components/ShamsiPicker.jsx` — تقویم شمسی+ساعت
+- `puregh-miniapp/frontend/src/pages/WaitingList.jsx` — لیست انتظار
+- `puregh-miniapp/frontend/src/pages/AddRepo.jsx` — افزودن لینک GitHub
+
+### تقویم شمسی و پلاگین ساعت (۲۰۲۶-۰۹-۱۶)
+روی `react-multi-date-picker@4.5.2` (نویسنده‌ی ایرانی shahabyazdi). دو درس:
+1. **پلاگین `time_picker` تابعِ کامپوننت است؛ «call» نمی‌شود.** `timePicker({...})`
+   در زمان رندر بدنه‌ی کامپوننت را با پراپس ناقص اجرا می‌کند و روی
+   `calendarProps.formattingIgnoreList` کرش می‌دهد (صفحه‌ی سفید). باید به‌صورت
+   element داده شود: `plugins={[<TimePicker hideSeconds />]}`.
+2. **JSX با حرف کوچک = تگ HTML.** `<timePicker />` به‌عنوان عنصر رشته‌ای کامپایل
+   می‌شود (`jsx("timePicker", ...)`) و پلاگین رندر نمی‌شود (فقط تاریخ می‌آید،
+   ساعت نه). فیکس: `import timePicker …; const TimePicker = timePicker;` و استفاده‌ی
+   `<TimePicker position="bottom" hideSeconds />`.
+- فرمت `YYYY/MM/DD HH:mm`، `digits` فارسی، خروجی `date.toDate().toISOString()`
+  (UTC ISO — مطابق قرارداد publish_at). الساعت با `position="bottom"` زیر تقویم
+  می‌آید.
+- CSS تیره‌ی picker در `frontend/src/styles.css` (کلاس‌های `.rmdp-*` زیر
+  `.shamsi-picker`).

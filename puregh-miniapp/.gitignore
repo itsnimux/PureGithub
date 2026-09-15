@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+pkg-test.mjs
+test-entry.jsx
+test.html
+dist-test/
+dist-test2/
+vite.test.config.mjs

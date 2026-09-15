@@ -1,0 +1,20 @@
+{
+  "name": "puregh-miniapp-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Backend for the Pure GitHub review Mini App (replaces the telegram-bot workflow node graph)",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "typecheck": "node --check src/**/*.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "dotenv": "^16.4.7",
+    "cors": "^2.8.5",
+    "node-fetch": "^3.3.2"
+  }
+}
