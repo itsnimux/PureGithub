@@ -372,9 +372,10 @@ Save Posts Payload → Save Final Posts → Join Posts To Sends → Loop Bot Sen
 فیکسچرهای تست شباهت هدف بعد از تست پاک شدند (`github_id` های ۹۰۰۰۰۱ تا
 ۹۰۰۰۰۵)، و فیکسچرهای تست cooldown هم (۹۹۰۰۰۱ تا ۹۹۰۰۰۸).
 
-فازهای بعدی: فعال‌کردن Discovery برای پروداکشن (چون ربات و Publisher فعال‌اند و
-صف پست‌ها با discovery پر می‌شود)، مهاجرت کامل به VM Freestyle (§۱۸/§۱۹ —
-الان فقط تست است)، و بعد Reference Learning، RAG، Feedback Loop.
+فازهای بعدی: مهاجرت کامل به VM Freestyle (§۱۸/§۱۹ — الان فقط تست است) — ✅
+**همین اتفاق افتاد (۲۰۲۶-۰۹-۱۵): مهاجرت کامل به VM شخصی `nimux` انجام شد.**
+لپ‌تاپ حالا فقط کارخانه‌ی توسعه است. تولید روی `nimux` اجرا می‌شود (پایین، §۲۲).
+بعد از آن Reference Learning، RAG، Feedback Loop مانده.
 ابزار جدید (سند NEW.md): Discovery Engine دوم برای اخبار/داستان‌های AI Agent —
 طرح تأییدشده، هنوز پیاده‌سازی نشده.
 
@@ -514,9 +515,12 @@ remote ندارد — هنوز جایی push نشده.
 | Pure GitHub — Provider Check | `gpFQDxJSXQerF0VT` | تست هر provider سازگار OpenAI |
 | Pure GitHub — Telegram Channel Check | `A3VMKNB4oVfkxHJx` | تشخیص خطای chat not found |
 
-وضعیت active (۲۰۲۶-۰۹-۱۴): **ربات (`Zro6k6d8JcAOOpfn`) و Publisher
-(`1tVlx8NwE7Qe4WWa`) فعال‌اند** — لپ‌تاپ منبع webhook/schedule است، پشت
-تونل cloudflared (`N8N_WEBHOOK_URL` در env کانتینر). بقیه غیرفعال.
+وضعیت active (۲۰۲۶-۰۹-۱۵، بعد از مهاجرت به VM `nimux`): **Discovery
+(`hHSwbbOBKRIWStRU`)، ربات (`Zro6k6d8JcAOOpfn`) و Publisher
+(`1tVlx8NwE7Qe4WWa`) هر سه فعال‌اند** — حالا روی VM `nimux` اجرا می‌شوند، نه
+لپ‌تاپ. دامنه عمومی: `n8n.style.dev` (TLS rule به VM `nimux` پورت 5678).
+وب‌هوک تلگرام به `https://n8n.style.dev/webhook/...` ثبت شده (تست زنده موفق).
+بقیه غیرفعال.
 
 ### زنجیره workflow اصلی
 ```
@@ -1353,3 +1357,69 @@ idleTimeout=300s. **این VM محیط تست مستقل است — n8n لپ‌�
 | مسیر دستی add به زنجیره‌ی LLM چسبیده بود (کپشن کاربر نادیده گرفته می‌شد) | `Build Add Manual From Text → Fetch Repo Metadata` (نود مشترک مسیر LLM) | نود HTTP مجزای `Fetch Add Manual Metadata` + زنجیره‌ی کاملاً مستقل |
 | 404 آنی در مسیر addgen | یال قدیمی `Send Add Choice → Fetch Repo Metadata`: پاسخ تلگرام `{ok,result}` اصلاً `full_name` ندارد | یال حذف شد؛ `Fetch Add Readme` از `$json.full_name` می‌خواند (از `Fetch Repo Metadata`) نه `$('Parse Add URL')` |
 | URL تونل عوض شد بعد از ری‌استارت cloudflared | quick tunnel هر بار URL جدید می‌دهد؛ `N8N_WEBHOOK_URL` کهنه می‌ماند | `recreate-n8n.sh` حالا `${N8N_WEBHOOK_URL:+...}` را می‌پذیرد؛ بعد از هر recreate باید webhook تلگرام deactivate→activate و Publisher دوباره publish شود |
+## ۲۲) مهاجرت کامل به VM شخصی `nimux` (۲۰۲۶-۰۹-۱۵)
+
+**موفق شد — کل پروداکشن از لپ‌تاپ به VM `nimux` (فری‌استایل) منتقل و تست زنده شد.**
+لپ‌تاپ فقط کارخانه‌ی توسعه است؛ تولید (ن8ن + DB + ربات + زمان‌بند) روی `nimux`
+اجرا می‌شود. این بخش روش‌شناسی و وضعیت نهایی را ثبت می‌کند.
+
+### نقشه‌ی نهایی
+| چیز | مقدار |
+|---|---|
+| VM | `nimux` (2vCPU/4GB، id `vm-80ca4e8605a04ccf9c6c0cb740130337`) |
+| دامنه public | `n8n.style.dev` → VM `nimux:5678` (TLS rule `tls-945061770b4848a585df8334828b2d28`) |
+| کانتینر n8n | `docker.n8n.io/n8nio/n8n` **2.38.7**، volume `n8n_data`، شبکه `puregh-net`، DNS ثابت 1.1.1.1/8.8.8.8 |
+| کانتینر DB | `pgvector/pgvector:pg16` (پورت host 127.0.0.1:5433)، volume `puregh_pgdata` |
+| بات تلگرام | `@puregithubbot` (توکن `8932467023:AAFJpV...`) |
+| MCP opencode | `https://n8n.style.dev/mcp-server/http` + همان JWT (کلید رمز volume مشترک است) |
+| پروژه روی VM | `~/project/PureGithub` (کپی کار - git کار می‌کند) |
+
+### چه چیزهایی منتقل شد و چطور
+1. **bن8n volume** (`n8n_data`): کانتینر لپ‌تاپ متوقف شد، sqlite **تمیزکاری شد**
+   (حذف `execution_data`/`execution_entity`/`execution_metadata`/`agent_execution*`/
+   `test_case_execution` + VACUUM) → از ۳۲۹MB به **6.9MB** رسید. workflow ها (10)،
+   history (74) و credential ها (8) سالم ماندند. نکته‌ی کلیدی: **فایل WAL جدا کپی
+   و کنار دیتابیس گذاشته شد** (سگ: `-wal` را با هم بفرست، وگرنه داده‌ی commit نشده
+   می‌پرد). volume مقصد از قبل پاک شد (به جز config).
+2. **config (کلید رمز)** از لپ‌تاپ کپی شد — credential ها در VM با همان کلید
+   رمزگشایی شدند. **هرگز `N8N_ENCRYPTION_KEY` env نده** (mismatch می‌دهد؛ فایل
+   config ملاک است — درس §19).
+3. **DB**: `pg_dump -Fc` روی لپ‌تاپ → `pg_restore --clean --if-exists` روی
+   `puregh-db` VM. دو extension (vector, pg_trgm) و اسکیما (2 تریگر، 3 ویو، 19
+   ایندکس) سالم بودند. شمارنده سیکوئنس هم درست برگشت (repositories_id_seq=10).
+
+### تفاوت‌های env کانتینر n8n (در VM)
+```
+-e N8N_WEBHOOK_URL=https://n8n.style.dev
+-e N8N_EDITOR_BASE_URL=https://n8n.style.dev
+-e N8N_PROXY_HOPS=1
+```
+`N8N_PROXY_HOPS=1` **ضروری است** — بدونش، n8n پشت TLS proxy خطای
+`ERR_ERL_UNEXPECTED_X_FORWARDED_FOR` می‌دهد (express-rate-limit).
+
+### فعال‌سازی workflow ها
+CLI داخل کانتینر، پس از قرار دادن volume:
+```
+docker exec n8n n8n publish:workflow --id=<UUID>
+docker restart n8n   # publish فقط بعد از restart اثرمی‌کند
+```
+هر سه فعال شدند: Discovery (`hHSwbbOBKRIWStRU`)، ربات (`Zro6k6d8JcAOOpfn`)،
+Publisher (`1tVlx8NwE7Qe4WWa`).
+
+### تست‌های زنده‌ی بعد از مهاجرت (همه موفق)
+- `GET https://n8n.style.dev/healthz` → 200.
+- `getWebhookInfo`: url=`https://n8n.style.dev/webhook/266e24e0-.../webhook`,
+  `pending_update_count=0`.
+- پیام «لیست انتظار» به ربات → اجرای 238 webhook موفق، `Send Waiting List`
+  آخرین نود اجراشده، مسیر waitlist کامل. **ربات واقعاً روی VM جواب می‌دهد.**
+- MCP روی دامنه public با همان JWT کار می‌کند (tools/list و get execution).
+
+### نگهداری بعدی
+- **MCP در opencode.json لپ‌تاپ** به `https://n8n.style.dev/mcp-server/http` تغییر
+  کرد — بعد از ری‌استارت opencode اعمال می‌شود.
+- Docker run کانتینر n8n این بار دستی زده شد (نه `recreate-n8n.sh`). برای
+  تکرار/مستندسازی یک نسخه VM-مخصوص از `recreate-n8n.sh` سودمند است (env های بالا
+  + N8N_PROXY_HOPS). هرگز volume را دستی با encription key جابه‌جا نکن.
+- لپ‌تاپ: کانتینرهای n8n متوقف شد؛ DB لپ‌تاپ باز دست‌نخورده است (بکاپ‌های
+  `/tmp/puregh-backup.dump` و `/tmp/n8n-data-original.tar.gz` — موقتی‌اند).
+  برای پاک‌کردن لپ‌تاپ بعداً تصمیم بگیر.
