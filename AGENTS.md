@@ -1424,64 +1424,169 @@ Publisher (`1tVlx8NwE7Qe4WWa`).
   `/tmp/puregh-backup.dump` و `/tmp/n8n-data-original.tar.gz` — موقتی‌اند).
   برای پاک‌کردن لپ‌تاپ بعداً تصمیم بگیر.
 
-## ۲۳) مینی‌اپ تلگرام (جایگزین فرم بازبینی n8n) — در حال ساخت (۲۰۲۶-۰۹-۱۶)
+## ۲۳) مینیاپ تلگرام — جایگزین فرم بازبینی n8n (در حال ساخت، ۲۰۲۶-۰۹-۱۶)
 
-کاربر تصمیم گرفت بازبینی به‌جای فرم n8n، یک **Telegram Mini App** (WebApp) باشد.
-کد: `puregh-miniapp/` (React/Vite فرانت + Express بک‌اند + اسکریپت راه‌اندازی
-ربات که دکمه‌ی باز کردن اپ را می‌فرستد). هنوز `active` نیست؛ اپ از طریق
-**tunnel cloudflared** به بک‌اند لوکال می‌رسد و ربات `@puregithubbot` از VM
-می‌تواند WebApp باز کند. **این مرحله در حال توسعه روی لپ‌تاپ است** — n8n اصلی
-روی VM `nimux` دست نمی‌خورد.
+کاربر تصمیم گرفت بازبینی (لیست انتظار + تایید/رد/زمان‌بندی/کپشن) از محلول فعلی
+(workflow ربات تلگرام + دکمه‌های inline) به یک **Telegram Mini App** منتقل شود.
+جای فرم n8n هم که قبلاً حذف شد، همین اپ می‌شود. **این مرحله روی لپ‌تاپ توسعه
+می‌شود**؛ n8n/DB پروداکشن روی VM `nimux` دست نمی‌خورد. کد: `puregh-miniapp/`
+(فرانت React/Vite + بک‌اند Express + کد shared خالی). کامیت کامل نخست:
+`56fbf01`.
 
-### معماری
-- بک‌اند Express روی `127.0.0.1:3001`، DB = همان `puregh` (روی VM، از طریق SSH
-  forward). استاتیک فرانت از `frontend/dist`.
-- تأیید WebApp: `initdata.js` با `HMAC_SHA256(key="WebAppData", message=bot_token)`
-  روی data_check_string رشته‌ی URL-decoded و مرتبِ همه فیلدها به‌جز `hash`.
-- ربات (اسکریپت جدا) دکمه‌ی WebApp دارد: `start` → کیلوگرام «باز کردن بازبینی».
-- Owner chat id و همه تنظیمات در `backend/.env` (نه committed).
+### معماری و نقشه‌ی نهایی
+```
+ربات @puregithubbot → (WebAppMenu/direct URL) → مینیاپ
+        └─ دکمه‌ی اینلاین «پنل بازبینی» → https://MINIAPP_URL/post/:id
+مینیاپ (Express، 127.0.0.1:3001) → Postgres puregh (روی VM از طریق SSH forward)
+        └─ استاتیک = frontend/dist (همان origin، پس /api در dev فقط proxy است)
+فرانت = SPA (React + react-router، صفحات: / ، /post/:id ، /add)
+```
 
-### فایل‌های کلیدی
-- `puregh-miniapp/backend/src/security/initdata.js` — اعتبارسنجی initData
-- `puregh-miniapp/backend/src/routes.js` — API (لیست انتظار، post، approve، reject، schedule)
-- `puregh-miniapp/frontend/src/pages/PostDetail.jsx` — صفحه‌ی جزئیات پست
-- `puregh-miniapp/frontend/src/components/ShamsiPicker.jsx` — تقویم شمسی+ساعت
-- `puregh-miniapp/frontend/src/pages/WaitingList.jsx` — لیست انتظار
-- `puregh-miniapp/frontend/src/pages/AddRepo.jsx` — افزودن لینک GitHub
+| قطعه | فایل | نقش |
+|---|---|---|
+| ورودی اصلی | `backend/src/server.js` | Express؛ middleware `requireOwner` روی همه‌ی `/api`؛ سرو استاتیک dist |
+| مسیرها | `backend/src/routes.js` | ۸ endpoint (پایین) |
+| DB | `backend/src/db.js` | pg Pool روی تنظیمات `.env` |
+| تأیید Telegram | `backend/src/security/initdata.js` | HMAC initData (پایین) |
+| متادیتا/README | `backend/src/github.js` | `/repos/{full}` + **raw.githubusercontent** (سهمیه نمی‌سوزاند) |
+| LLM | `backend/src/llm.js` | chat/completions، primary→fallback، JSON، فنس ```` ```json ```` بردار |
+| کپشن | `backend/src/caption.js` + `caption-system-prompt.txt` | assemble + پرامپت (پایین) |
+| تلگرام | `backend/src/telegram.js` | answerCallback، editReviewMessage، reviewKeyboard (web_app) |
+| تنظیمات | `backend/.env` ≠ `.env.example` | توکن‌ها/LLM/MINIAPP_URL؛ `.env` committed نیست |
+
+فرانت: `main.jsx` (react-router، ۳ مسیر) / `App.jsx` (topbar + تلگرام `ready()` +
+شمارنده‌ی لیست) / `api.js` (هر دو fetch + هدر initData) / `format.js`
+(faDateTime/faShort/toLocalInput/stripHtml/**escapeHtml**) / صفحات:
+`pages/WaitingList.jsx` (کارت‌ها + pill زمان/بدون‌زمان + count) ·
+`pages/PostDetail.jsx` (۴ دکمه + ویرایش کپشن + تقویم + مودال تأیید رد) ·
+`pages/AddRepo.jsx` (manual/AI) · `components/ShamsiPicker.jsx` (تقویم شمسی+ساعت).
+
+### API (همه با هدر `x-telegram-init-data`، فقط owner)
+| مسیر | کار |
+|---|---|
+| `GET /api/posts` | لیست انتظار: drafts، مرتب `publish_at ASC NULLS LAST`، با full_name/model/attempt |
+| `GET /api/posts/:id` | جزئیات یک draft (JOIN ریپو) |
+| `POST /api/posts/:id/approve` | فقط ack — پست دست‌نخورده در publish_at می‌رود (همان قرارداد قبلی) |
+| `POST /api/posts/:id/reject` | `status='rejected', reject_reason='mini-app-reject'` → تریگر DB ریپو را ابدی قفل می‌کند + ویرایش پیام ربات |
+| `POST /api/posts/:id/regen` | ساخت دوباره با LLM (facts از ردیف ریپو + README raw) + `attempt+1` + ویرایش پیام ربات |
+| `POST /api/posts/:id/caption` | کپشن دستی (متنی — فرانت escape می‌کند) |
+| `POST /api/posts/:id/schedule` | `publish_at` از ISO پذیرفته؛ هر دو (بدون/با زمان موجود) را برمی‌گرداند |
+| `POST /api/add/gen` | متادیتا+README→facts→LLM→assemble→upsert ریپو(`source='submission'`)→پست draft |
+| `POST /api/add/manual` | بدون LLM؛ فقط متادیتا + کپشن داده‌شده |
+
+upsert ریپو مثل n8n است: `jsonb_array_elements($1::jsonb)` روی آرایه‌ی تک‌عضو
+(wrap در کد)، `ON CONFLICT (github_id) DO UPDATE` — پس افزودن دوباره‌ی یک ریپو
+دیتای تازه را آپدیت می‌کند نه اینکه مشتری باشد.
+
+### امنیت — `initdata.js` (با initData واقعی تأیید شد)
+مستندات می‌گوید `secret_key = HMAC(bot_token, "WebAppData")` ولی **تلگرام واقعی
+برعکس امضا می‌کند** (مستند راست‌بخشی است):
+```
+secret_key  = HMAC_SHA256("WebAppData", bot_token)          // باینری
+computed    = HMAC_SHA256(secret_key, data_check_string)    // hex
+dcs         = همه‌ی فیلدها به‌جز hash، مقادیر URL-decoded، مرتب، joined با \n
+```
+به‌علاوه: انقضا (auth_date، `maxAgeMs=86400_000`)، پارس `user`، و `is_owner =
+String(user.id) === OWNER_CHAT` (تنها 5622960785). فرانت initData را در کلاینت
+تلگرام از `window.Telegram.WebApp.initData` می‌گیرد؛ برای dev خارج از تلگرام
+`?initData=` در URL (api.js). `DEBUG_AUTH=1` در env برای دیباگ.
+
+### کپشن — پرامپت و assemble «همان» workflow ربات
+- `caption-system-prompt.txt` از پرامپت نود LLM ربات (نیومن جدا) **عیناً** منتقل
+  شده: لحن دوستانه، طول‌ها (title ۶۰ / hook ۱۴۰ / why ۲۲۰، جمع ۴۲۰)، verdict
+  سه‌حالته، category، «هیچ عددی ننویس» (از §۱۰).
+- `assembleCaption()` پرت verbatim از Assemble Regen/Add ربات: opener ایموجی
+  **deterministic روی full_name** (پیش‌نویسِ بازتولیدشده همان ایموجی دارد)،
+  `- @owner` در انتها، escape-HTML امن. فیلدهای غایب → throw (تستوشده).
+- قانون **«تکرار با پست‌های مشابه → verdict=reject»** در prompt هست ولی
+  `similarPostsText` فعلاً در مینیاپ پر نمی‌شود (در n8n از Purpose Similarity
+  می‌آمد) — نقص شناخته‌شده، در Model B باید وصل شود.
+- `llm.js`: شکست 402/429 → try مدل fallback؛ خطای JSON فقط fallback را رد می‌کند؛
+  خروجی چه زیر `output` باشد چه تخت، tolerate می‌کند (درس §۹ caption خالی).
+
+### دکمه‌ی «باز کردن پنل» در پیام ربات
+`telegram.js` حالا ۴ دکمه‌ی inline قدیمی (ok/rej/regen/manual) را **یک دکمه‌ی
+web_app** کرده: `«📋 باز کردن پنل بازبینی»` با `url = ${MINIAPP_URL}/post/${postId}`.
+تمام ویرایش‌های پیام (approve/reject/regen/caption/schedule) همان دکمه را
+نگه می‌دارند. `answerCallback` و `editReviewMessage` هر دو best-effort نوشته
+شده‌اند: خطای تلگرام نباید عمل DB را خراب کند (query_id ممکن است کهنه/غایب
+باشد).
 
 ### تقویم شمسی و پلاگین ساعت (۲۰۲۶-۰۹-۱۶)
-روی `react-multi-date-picker@4.5.2` (نویسنده‌ی ایرانی shahabyazdi). دو درس:
+روی `react-multi-date-picker@4.5.2` (نویسنده‌ی ایرانی shahabyazdi) + calendar
+persian + locale persian_fa. **دو درس که ریشه‌ی صفحه‌ی سفید بودند:**
 1. **پلاگین `time_picker` تابعِ کامپوننت است؛ «call» نمی‌شود.** `timePicker({...})`
-   در زمان رندر بدنه‌ی کامپوننت را با پراپس ناقص اجرا می‌کند و روی
-   `calendarProps.formattingIgnoreList` کرش می‌دهد (صفحه‌ی سفید). باید به‌صورت
-   element داده شود: `plugins={[<TimePicker hideSeconds />]}`.
-2. **JSX با حرف کوچک = تگ HTML.** `<timePicker />` به‌عنوان عنصر رشته‌ای کامپایل
-   می‌شود (`jsx("timePicker", ...)`) و پلاگین رندر نمی‌شود (فقط تاریخ می‌آید،
-   ساعت نه). فیکس: `import timePicker …; const TimePicker = timePicker;` و استفاده‌ی
+   بدنه‌ی کامپوننت را با پراپس ناقص اجرا می‌کند و روی
+   `calendarProps.formattingIgnoreList` کرش می‌دهد (صفحه‌ی سفید). باید element
+   داده شود: `plugins={[<TimePicker hideSeconds />]}`.
+2. **JSX با حرف کوچک = تگ HTML.** `<timePicker />` به `jsx("timePicker", ...)`
+   کامپایل می‌شود و پلاگین رندر نمی‌شود (فقط تاریخ، ساعت نه). فیکس:
+   `import timePicker …; const TimePicker = timePicker;` و
    `<TimePicker position="bottom" hideSeconds />`.
-- فرمت `YYYY/MM/DD HH:mm`، `digits` فارسی، خروجی `date.toDate().toISOString()`
-  (UTC ISO — مطابق قرارداد publish_at). الساعت با `position="bottom"` زیر تقویم
-  می‌آید.
-- CSS تیره‌ی picker در `frontend/src/styles.css` (کلاس‌های `.rmdp-*` زیر
-  `.shamsi-picker`).
+- فرمت `YYYY/MM/DD HH:mm`، `digits` فارسی، پیش‌فرض = حالا + ۳۰ دقیقه، خروجی
+  `date.toDate().toISOString()` (UTC ISO — قرارداد publish_at؛ تهران UTC+3:30
+  بدون DST، پس اگر در تلگرام ساعت غلط دیدی، تبدیل نکن). الساعت
+  `position="bottom"` پایین تقویم. CSS تیره در `styles.css` (کلاس‌های `.rmdp-*`
+  زیر `.shamsi-picker`، ورودی ساعت خط ۳۱۹).
+- **نکته‌ی جمله‌سازی نشد:** در همین picker، چیدن timePicker به شکل `<timePicker/>`
+  بی‌خطا کامپایل ولی بی‌اثر بود؛ فقط با تغییر به متغیر بزرگ (پشت پلاگین جدا از
+  تاریخ) ساعت ظاهر شد.
 
-### وضعیت و کارهای باقی‌مانده (۲۰۲۶-۰۹-۱۶)
-تست‌شده و کار می‌کنند: لیست انتظار، جزئیات پست با ۴ دکمه، انتخاب تاریخ با
-تقویم شمسی+ساعت (`<TimePicker />` به‌صورت element)، Schedule از تقویم تا
-`publish_at` UTC ISO، ویرایش کپشن به‌صورت متن ساده و ذخیره‌ی HTML-escaped
-(`escapeHtml` در `format.js`). یک کامیت کامل مینیاپ اعمال شد (`56fbf01`).
+### ستاپ توسعه (لپ‌تاپ)
+```
+node backend/src/server.js                 # بک‌اند :3001  (DB از طریق SSH forward)
+npm run dev (در frontend/)                 # :5173 + proxy /api → 3001
+cloudflared tunnel --url http://127.0.0.1:3001   # MINIAPP_URL را برابر tunnel کن
+```
+همین origin بودن یعنی دکمه‌ی web_app هم به tunnel اشاره می‌کند (`backend/.env`:
+`MINIAPP_URL=https://isa-increasing-mark-connectors.trycloudflare.com`). بعد از
+هر build فرانت، `dist` نو همان origin سرو می‌شود — پورت بک‌اند را عوض نمی‌کند.
+**نکته‌ی سروگیری:** اگر فایل `dist` موجود نباشد صفحه خالی می‌شود؛ توسعه معمولاً
+با `npm run dev` است ولی باندل نهایی فقط از `dist` سرو می‌شود.
 
-کارهای باقی‌مانده:
-1. **دکمه‌ی باز کردن اپ از ربات (Model B) + deploy به VM.** الان اپ از طریق
-   tunnel cloudflared (روی لپ‌تاپ) در دسترس است؛ باید روی VM `puregh` برود
-   (دامنه‌ی دوم `puregh-app.style.dev` یا مشابه) و ربات شروع به فرستادن
-   دکمه‌ی WebApp بکند.
-2. **Model B (باز‌بینی در مینیاپ)** — هر پست جدید به‌جای لیست انتظار ربات به
-   اپ برود، approve/reject/schedule از داخل اپ، و ربات دیگر جایگزین فرم بازبینی
-   نبوده و صرفاً منوی اصلی باشد.
-3. **اتصال به DB واقعی** — الان بک‌اند از طریق SSH forward به DB VM وصل است؛
-   بعد از deploy اتصال مستقیم/local می‌شود.
-4. **حذف یا نگه‌داشتن workflow ربات** — اگر مینیاپ جایگزین بازبینی شد، مسیرهای
-   افزودن/ویرایش/زمان ربات مازاد می‌شوند (تصمیم کاربر است).
-5. **NEW.md (Discovery Engine دوم برای اخبار AI Agent)** — خارج از محدوده‌ی
-   مینیاپ و فعلاً در صف است.
+### وضعیت فعلی و تست‌ها (۲۰۲۶-۰۹-۱۶)
+تست‌شده و کار می‌کند: لیست انتظار (خالی/پر)، جزئیات پست با ۴ دکمه، تقویم
+شمسی+ساعت با `<TimePicker/>`، Schedule → `publish_at` ISO، ویرایش کپشن متنی و
+ذخیره‌ی HTML-escaped، reject با مودال (بجای window.confirm که در تلگرام خراب
+است)، upsert ریپو با `ON CONFLICT`، دکمه‌ی web_app در پیام ربات.
+بررسی نهایی: `dist` از باندل نهایی (index-DnTOUNuI.js) دقیقاً `plugins:[...time_picker...]`
+دارد (فیکس در پروداکشن هست نه فقط dev). ربات/بک‌اند فعلاً **روی دیسک نیستند**
+(سرور 3001 در حال اجرا نیست، cloudflared هم نیست) — برای تست باید باز شوند.
+`LLM_MODEL`/`LLM_FALLBACK_MODEL` در `.env` خالی است → regen و add/gen هشدار
+می‌دهند و کار نمی‌کنند تا پر شوند (provider/fallback از n8n گرفته شود).
+
+### مراحل بعدی — به ترتیب پیشنهادی (کاربر قبلاً چهار مورد را دیده)
+1. **فهم نهایی UX (Model B)**: هر پست جدید به‌جای پیام ربات با ۴ دکمه، به اپ
+   برود؛ «تایید/رد/زمان/کپشن» از داخل اپ؛ ربات فقط منو/اطلاع باشد.
+2. **دکمه‌ی باز کردن اپ از پیام‌های ربات** (همان reviewKeyboard که الان هست) —
+   وقتی MINIAPP_URL روی دامنه‌ی عمومی بود، پیام تست بفرست و کلیک واقعی را چک کن.
+3. **deploy به VM `puregh`** (دامنه‌ی دوم مثل `puregh-app.style.dev`): بک‌اند +
+   dist روی VM، اتصال DB مستقیم/local (الان SSH forward است)، LLM/GitHub env ها
+   از n8n-معادل، webhook تلگرام (setWebhook) مثل §۱۹/§۲۲.
+4. **تصمیم درباره‌ی workflow ربات n8n**: مسیرهای بازبینی/افزودن/زمان ربات مازاد
+   می‌شوند؛ نگه‌داشتن فقط برای لیست/منو یا غیرفعال‌کردن کامل (تصمیم کاربر).
+5. **وصل‌کردن شباهت هدف مینیاپ** (`similarPostsText` در llm.js/رoutes.js از
+   query شباهت هدف discovery) تا verdic نهایی حداقلِ گیرنده بودن را حفظ کند.
+6. **NEW.md** (Discovery Engine دوم برای اخبار AI Agent) — خارج از مینیاپ، در
+   صف است.
+
+### درس‌های فنی مینیاپ (تکرار نشود)
+| علامت | علت/رفع |
+|---|---|
+| صفحه‌ی سفید PostDetail | `timePicker({...})` به‌صورت call → crash روی `formattingIgnoreList` |
+| تقویم هست، ساعت نیست | `<timePicker/>` حرف کوچک = تگ HTML؛ `const TimePicker = timePicker` |
+| `window.confirm` در تلگرام | مودال خودساخته (`modal-overlay`) — از confirm استفاده نشود |
+| run `regen` روی پست بدون publish_at | نال‌گارد در editReviewMessage (best-effort)؛ زمان دست نمی‌خورد |
+| initData نامعتبر | مستندات جهت HMAC را برعکس می‌نویسند؛ see `initdata.js` |
+| `?initData=` در URL برای تست خارج تلگرام | فقط dev — در prod فقط `window.Telegram.WebApp.initData` |
+| facts/README برای regen | از ردیف خودِ ریپو + raw.githubusercontent (سهمیه‌ی API نمی‌سوزاند) |
+| upsert تکراری | `ON CONFLICT (github_id)` آپدیت می‌کند — ریپو دوباره draft نمی‌گیرد مگر پستش حذف باشد |
+
+### فایل‌های کلیدی (برای توسعه‌ی بعدی)
+- `backend/src/security/initdata.js` — اعتبارسنجی initData (جهت HMAC معکوس)
+- `backend/src/routes.js` — همه‌ی endpoint ها + upsert/verify
+- `backend/src/telegram.js` — reviewKeyboard (web_app) + best-effort ویرایش
+- `frontend/src/components/ShamsiPicker.jsx` — تقویم شمسی+ساعت
+- `frontend/src/format.js` — escapeHtml/stripHtml/faDateTime
+- `frontend/src/pages/PostDetail.jsx` — عملیات/مودال/ویرایش
+- `backend/.env.example` — قرارداد همه‌ی env ها
