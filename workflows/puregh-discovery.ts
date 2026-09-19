@@ -656,10 +656,6 @@ const assembleCaption = node({
         "const why = String(llm.why_interesting ?? '').trim();",
         "if (why) lines.push('', why);",
         "if (audience) lines.push('', '\\uD83D\\uDC65 ' + audience);",
-        "const meta = ['\\u2B50 ' + stars];",
-        'if (lang) meta.push(\'\\uD83D\\uDCBB \' + lang);',
-        'if (lic) meta.push(\'\\uD83D\\uDCDC \' + lic);',
-        "lines.push('', meta.join('   '));",
         "lines.push('', 'https://github.com/' + facts.full_name);",
         'lines.push(\'- \' + esc(facts.owner));',
         'const caption = lines.join(NL);',
@@ -1081,9 +1077,9 @@ const loopBotSends = splitInBatches({
 });
 
 // ---------------------------------------------------------------------------
-// Send to Bot — the review message: caption + publish time + 4 inline
-// buttons (approve / reject / regenerate / manual). The publish time appears
-// ONLY here, never in the channel post itself.
+// Send to Bot — the review message: caption + publish time + a single
+// web_app button that opens the review Mini App (Model B). The publish time
+// appears ONLY here, never in the channel post itself.
 // ---------------------------------------------------------------------------
 const sendToBot = node({
   type: 'n8n-nodes-base.telegram',
@@ -1100,16 +1096,7 @@ const sendToBot = node({
           {
             row: {
               buttons: [
-                { text: '✅ تایید', additionalFields: { callback_data: "={{ 'ok:' + $json.post_id }}" } },
-                { text: '❌ رد', additionalFields: { callback_data: "={{ 'rej:' + $json.post_id }}" } },
-              ],
-            },
-          },
-          {
-            row: {
-              buttons: [
-                { text: '🔄 ساخت دوباره کپشن', additionalFields: { callback_data: "={{ 'regen:' + $json.post_id }}" } },
-                { text: '✍️ نوشتن دستی', additionalFields: { callback_data: "={{ 'manual:' + $json.post_id }}" } },
+                { text: '📋 باز کردن پنل بازبینی', additionalFields: { web_app: { url: "={{ 'https://puregh-app.style.dev/post/' + $json.post_id }}" } } },
               ],
             },
           },

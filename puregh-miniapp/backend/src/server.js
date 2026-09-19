@@ -30,7 +30,15 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-app.use(express.static(path.join(__dirname, '../../frontend/dist')));
+const distDir = path.join(__dirname, '../../frontend/dist');
+app.use(express.static(distDir));
+
+// SPA fallback: the Telegram web_app button deep-links to /post/:id (and /add),
+// which the router handles client-side. Serve index.html on any unmatched GET.
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api') || req.path.startsWith('/health')) return next();
+  res.sendFile(path.join(distDir, 'index.html'));
+});
 
 app.listen(config.port, () => {
   console.log(`[puregh-miniapp] backend on :${config.port}`);
