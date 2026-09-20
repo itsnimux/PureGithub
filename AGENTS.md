@@ -418,9 +418,17 @@ id=11 → پست حذف شد، ریپو `nimux/fixture-review` دست‌نخور
 شد (DB الان ۴ ریپو، صفر draft).
 
 **MINIAPP_URL فعلی (تنها مرجع، ۲۰۲۶-۰۹-۲۰):**
-`https://state-noon-resume-insertion.trycloudflare.com` — در `backend/.env` و در
-ثابت `MINIAPP_URL` فایل `puregh-review-bot.ts` (دکمه‌ی web_app). اگر URL عوض شد هر
-دو باید همگام شوند.
+`https://committees-freelance-merchant-quickly.trycloudflare.com` — در
+`backend/.env` و در ثابت `MINIAPP_URL` فایل `puregh-review-bot.ts` (دکمه‌ی
+web_app). اگر URL عوض شد هر دو باید همگام شوند.
+
+⚠️ **quick tunnel بعد از هر ریاستارت/کرش URL جدید می‌گیرد و URL قبلی مرده می‌شود**
+(Error 1033 در تلگرام). اگر دکمه‌ی web_app خطای Cloudflare Tunnel داد: اول با
+`curl` تأیید کن tunnel زنده است، بعد URL تازه را در هر دو جا (`backend/.env` +
+`puregh-review-bot.ts` + دکمه‌ی n8n) همگام کن و یک پیام **تازه** بفرست (پیام
+قدیمی به قوت URL کهنه چسبیده است؛ ویرایش پیام کافی نیست). پروسه‌ی cloudflared
+باید با `setsid ... > /tmp/cloudflared.log &` از شل جدا شود تا با بستن ترمینال
+نمیرد.
 
 ## ۳) محیط اجرا
 
