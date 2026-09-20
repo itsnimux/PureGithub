@@ -1,6 +1,6 @@
 # AGENTS.md — حافظه پروژه Pure GitHub (برای دستیار opencode)
 
-> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-14
+> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-20
 
 ## ۱) پروژه چیست؟
 
@@ -379,6 +379,49 @@ Save Posts Payload → Save Final Posts → Join Posts To Sends → Loop Bot Sen
 ابزار جدید (سند NEW.md): Discovery Engine دوم برای اخبار/داستان‌های AI Agent —
 طرح تأییدشده، هنوز پیاده‌سازی نشده.
 
+### ✅ مدل B و «Review Bot» — ساخته و تست زنده شد (۲۰۲۶-۰۹-۲۰)
+کاربر خواست ﭘست‌ها از discovery به یک ربات بررسی جدید بروند (نه به workflow ربات
+قدیمی تلگرام). ربات هفتم ساخته شد: **«Pure GitHub — Review Bot»**، id=
+`KfWNSjAws4DQ2bjq` (۱۹ نود). فایل منبع حقیقت: `workflows/puregh-review-bot.ts`.
+**این ربات روی لپ‌تاپ تست شده و هنوز به VM `nimux` منتقل و active نشده.**
+
+- دو تریگر: `From Discovery` (executeWorkflowTrigger v1.2 passthrough) و
+  `Bot Updates` (Telegram). وقتی discovery اجرا می‌شود، هر پست به‌صورت جدا برای
+  ربات فرستاده می‌شود؛ ربات پیام با **دکمه‌ی web_app «باز کردن پنل بازبینی»**
+  (`MINIAPP_URL/post/:id` → مینیاپ باز می‌شود) + دکمه‌ی **«🗑 حذف از لیست»**
+  (`del:<post_id>`) می‌فرستد.
+- `del:` → فقط `DELETE FROM posts WHERE id AND status='draft'` — ریپو دست نمی‌خورد
+  (تفاوت با reject که ریپو را ابدی قفل می‌کند؛ حذف از لیست یعنی همان ریپو در
+  کشف بعدی می‌تواند دوباره بیاید). بعد از delete: ack + ویرایش پیام (حذف دکمه‌ها).
+- دستور/کالبک **«شروع دیسکاوری»** → `Execute Workflow` روی discovery (mode
+  integrated). discovery حالا **تریگرش دیگر Daily Schedule نیست** — یک
+  executeWorkflowTrigger v1.2 به نام From Review Bot (این طراحی deliberate است تا
+  discovery فقط وقتی اجرا شود که کاربر خواسته؛ schedule حذف شد).
+- 🔴 **ریسک زنجیره‌ای که رفع شد:** `answerStart.to(runDiscovery)` یعنی اگر ack
+  تلگرام خطا بدهد discovery شلیک نمی‌شد. چون `answerQuery` best-effort است (query
+  کهنه/تکراری را تلگرام رد می‌کند)، روی **۵ نود ack/ویرایش** (`Answer Start`,
+  `Answer Del`, `Answer Del Not Draft`, `Answer Unknown`, `Edit Del Message`)
+  `config.onError: 'continueRegularOutput'` گذاشته شد. تست: queryId ساختگی که قبلاً
+  «Bad request» می‌داد حالا مسیر را متوقف نمی‌کند.
+
+**تست‌های انجام‌شده (لپ‌تاپ، pin روی تریگر):**
+| اجرا | مسیر | نتیجه |
+|---|---|---|
+| 426 | From Discovery (پست ۱۰) | ✅ پیام واقعی با ۲ دکمه رفت (message_id=147) |
+| 428 | کلیک `del:10` | ✅ پست از DB حذف شد (فقط ack به‌خاطر queryId ساختگی خطا داد) |
+| 431 | دستور «شروع دیسکاوری» | ✅ discovery اجرا 432 (integrated) تا Select 16 — صفر کاندیدا (همه در cooldown طبیعی) |
+| 450 | کالبک `start:1` با queryId ساختگی | ✅ با onError، Run Discovery همچنان اجرا شد → discovery اجرا 451 |
+| 452 | From Discovery (پست ۱۱، لینک جدید) | ✅ message_id=148 ارسال شد |
+
+**تست زنده مینیاپ (توسط کاربر):** کلیک واقعی «حذف از لیست» در مینیاپ روی پست
+id=11 → پست حذف شد، ریپو `nimux/fixture-review` دست‌نخورده ماند. فیکسچر بعدش پاک
+شد (DB الان ۴ ریپو، صفر draft).
+
+**MINIAPP_URL فعلی (تنها مرجع، ۲۰۲۶-۰۹-۲۰):**
+`https://state-noon-resume-insertion.trycloudflare.com` — در `backend/.env` و در
+ثابت `MINIAPP_URL` فایل `puregh-review-bot.ts` (دکمه‌ی web_app). اگر URL عوض شد هر
+دو باید همگام شوند.
+
 ## ۳) محیط اجرا
 
 - OS: EndeavourOS (Arch)، شل zsh. سخت‌افزار ضعیف: AMD A6، ۲ هسته، ۷GB RAM، بدون GPU.
@@ -450,7 +493,8 @@ db/discovery-queries.sql    SQL قدم ۲ (cooldown، شباهت هدف، upsert
 scripts/setup.sh            بالا آوردن DB + اتصال n8n به شبکه + تست DNS
 scripts/recreate-n8n.sh     بازساخت کانتینر n8n با DNS ثابت (تنها ثبت آرگومان‌های run آن)
 scripts/backup.sh           بکاپ DB + کلید رمز credential های n8n
-workflows/*.ts              کد SDK هر سه workflow (منبع حقیقت)
+workflows/*.ts              کد SDK همه‌ی workflow ها (منبع حقیقت؛ review-bot هم اینجا است)
+puregh-miniapp/             مینیاپ تلگرام (فرانت React/Vite + بک‌اند Express) — §۲۳
 
 discovery/rules.js          همه‌ی اعداد الگوریتم، با دلیل هر کدام
 discovery/algorithm.js      منطق خالص، بدون عدد جادویی
@@ -509,8 +553,9 @@ remote ندارد — هنوز جایی push نشده.
 | نام | id | کار |
 |---|---|---|
 | Pure GitHub — Manual Publish | `oSo3G6YhDd8603eu` | مسیر اصلی (قدم ۱) |
-| Pure GitHub — Discovery | `hHSwbbOBKRIWStRU` | قدم ۲ — کشف روزانه (بخش ۱-۴) |
+| Pure GitHub — Discovery | `hHSwbbOBKRIWStRU` | قدم ۲ — کشف (بخش ۱-۴؛ تریگرش از Review Bot شلیک می‌شود، نه Schedule) |
 | Pure GitHub — Telegram Bot | `Zro6k6d8JcAOOpfn` | ربات بازبینی (بخش ۵، فاز ۱-۸ + بازطراحی UX) |
+| Pure GitHub — Review Bot | `KfWNSjAws4DQ2bjq` | **مدل B**: دریافت پست‌های discovery + دکمه web_app مینیاپ + del + شلیک discovery |
 | Pure GitHub — Publisher | `1tVlx8NwE7Qe4WWa` | زمان‌بند انتشار (فاز ۸) |
 | Pure GitHub — Provider Check | `gpFQDxJSXQerF0VT` | تست هر provider سازگار OpenAI |
 | Pure GitHub — Telegram Channel Check | `A3VMKNB4oVfkxHJx` | تشخیص خطای chat not found |
@@ -520,7 +565,8 @@ remote ندارد — هنوز جایی push نشده.
 (`1tVlx8NwE7Qe4WWa`) هر سه فعال‌اند** — حالا روی VM `nimux` اجرا می‌شوند، نه
 لپ‌تاپ. دامنه عمومی: `n8n.style.dev` (TLS rule به VM `nimux` پورت 5678).
 وب‌هوک تلگرام به `https://n8n.style.dev/webhook/...` ثبت شده (تست زنده موفق).
-بقیه غیرفعال.
+بقیه غیرفعال. ⚠️ **Review Bot روی لپ‌تاپ ساخته و تست شده، هنوز به VM منتقل و
+active نشده** — نوعش و دکمه‌هایش با workflow قدیمی ربات فرق دارد (بند «مدل B» بالا).
 
 ### زنجیره workflow اصلی
 ```
@@ -589,6 +635,12 @@ remote ندارد — هنوز جایی push نشده.
 | `cannot extract elements from an object` (اجرا ۱۳۰ ربات) | `jsonb_array_elements($1)` آرایه می‌خواهد ولی `repoJson` آبجکت تکی بود. رفع: wrap در queryReplacement. |
 | UPDATE بی‌اثر بدون خطا (publish_at در اجرای manual ربات) | postId از static data خوانده می‌شد که در manual منتقل نمی‌شود → `sched:undefined`. رفع: paired item. |
 | تاریخ معتبرنما برای مقدار NULL (اجرا ۱۳۲ ربات: «۱۱ دی» = epoch) | `new Date(null)` = epoch است نه Invalid Date؛ +3:30 تهران = ۱ ژانویه ۱۹۷۰ = «۱۱ دی ۱۳۴۸» جلالی. رفع: نال‌گارد قبل از `new Date`. |
+| `Bad request - please check your parameters` در `Answer *` هنگام تست | queryId ساختگیِ pin در سرور تلگرام ثبت نیست (پاسخ best-effort). اگر زنجیره به آن وابسته بود، discovery شلیک نمی‌شد. رفع: `onError: 'continueRegularOutput'` روی همه‌ی ackها. |
+| متن بلند Send Review به‌عنوان رشته‌ی چندخطی خراب می‌شد (اجرا ۴۲۳) | در telegram node متن چندخطی باید با `+ '...'` در هر خط ساخته شود، نه یک رشته‌ی چندخطی. الگو: `'={{ $json.caption\n' + "  + '\\n\\n'\n..." }` |
+| `Query Parameters must be a string of comma-separated values...` در Save Bot Message (اجرا ۴۲۵) | `queryReplacement` باید آرایه باشد نه رشته‌ی CSV؛ و paired item را از `.first().item.json` بخوان، نه `.json`. راه‌حل درست: `$("Send Review").first().json.result.chat.id` |
+| DNS دوباره مرد (اجرا ۴۲۴) بعد از بوت | همان §۳؛ بعد از هر بوت لپ‌تاپ اگر `EAI_AGAIN` دیدی، `docker exec n8n cat /etc/resolv.conf` را چک کن و با `recreate-n8n.sh` بازساخت. |
+| pin روی Telegram Trigger با wrapper `{body: ...}` | تریگر خودِ update را می‌دهد نه `body` را — pin باید خود update (با `callback_query` مستقیم) باشد. |
+| دکمه‌ی web_app با MINIAPP_URL کهنه | MINIAPP_URL در یک ثابت راز بین `backend/.env` و `puregh-review-bot.ts` مشترک است؛ عوض کردن فقط یکی، دکمه‌ی خراب می‌دهد. هر دو را همگام نگه دار. |
 
 
 ## ۱۰) قالب Caption (نسخه فعلی — تأییدشده)
@@ -1437,7 +1489,7 @@ Publisher (`1tVlx8NwE7Qe4WWa`).
 ```
 ربات @puregithubbot → (WebAppMenu/direct URL) → مینیاپ
         └─ دکمه‌ی اینلاین «پنل بازبینی» → https://MINIAPP_URL/post/:id
-مینیاپ (Express، 127.0.0.1:3001) → Postgres puregh (روی VM از طریق SSH forward)
+مینیاپ (Express، 127.0.0.1:3001) → Postgres puregh (لپ‌تاپ: کانتینر محلی یا SSH forward)
         └─ استاتیک = frontend/dist (همان origin، پس /api در dev فقط proxy است)
 فرانت = SPA (React + react-router، صفحات: / ، /post/:id ، /add)
 ```
@@ -1471,6 +1523,7 @@ Publisher (`1tVlx8NwE7Qe4WWa`).
 | `POST /api/posts/:id/regen` | ساخت دوباره با LLM (facts از ردیف ریپو + README raw) + `attempt+1` + ویرایش پیام ربات |
 | `POST /api/posts/:id/caption` | کپشن دستی (متنی — فرانت escape می‌کند) |
 | `POST /api/posts/:id/schedule` | `publish_at` از ISO پذیرفته؛ هر دو (بدون/با زمان موجود) را برمی‌گرداند |
+| `POST /api/posts/:id/delete` | **حذف از لیست**: فقط `DELETE` پستِ draft — ریپو دست نمی‌خورد (می‌تواند در کشف بعدی دوباره بیاید). ack + ویرایش پیام ربات. تست زنده: کلیک کاربر در مینیاپ روی پست ۱۱ ✅ |
 | `POST /api/add/gen` | متادیتا+README→facts→LLM→assemble→upsert ریپو(`source='submission'`)→پست draft |
 | `POST /api/add/manual` | بدون LLM؛ فقط متادیتا + کپشن داده‌شده |
 
@@ -1539,7 +1592,7 @@ npm run dev (در frontend/)                 # :5173 + proxy /api → 3001
 cloudflared tunnel --url http://127.0.0.1:3001   # MINIAPP_URL را برابر tunnel کن
 ```
 همین origin بودن یعنی دکمه‌ی web_app هم به tunnel اشاره می‌کند (`backend/.env`:
-`MINIAPP_URL=https://isa-increasing-mark-connectors.trycloudflare.com`). بعد از
+`MINIAPP_URL`). بعد از
 هر build فرانت، `dist` نو همان origin سرو می‌شود — پورت بک‌اند را عوض نمی‌کند.
 **نکته‌ی سروگیری:** اگر فایل `dist` موجود نباشد صفحه خالی می‌شود؛ توسعه معمولاً
 با `npm run dev` است ولی باندل نهایی فقط از `dist` سرو می‌شود.
@@ -1558,11 +1611,17 @@ cloudflared tunnel --url http://127.0.0.1:3001   # MINIAPP_URL را برابر t
 ### مراحل بعدی — به ترتیب پیشنهادی (کاربر قبلاً چهار مورد را دیده)
 1. **فهم نهایی UX (Model B)**: هر پست جدید به‌جای پیام ربات با ۴ دکمه، به اپ
    برود؛ «تایید/رد/زمان/کپشن» از داخل اپ؛ ربات فقط منو/اطلاع باشد.
-2. **دکمه‌ی باز کردن اپ از پیام‌های ربات** (همان reviewKeyboard که الان هست) —
-   وقتی MINIAPP_URL روی دامنه‌ی عمومی بود، پیام تست بفرست و کلیک واقعی را چک کن.
+   ✅ **انجام شد (۲۰۲۶-۰۹-۲۰):** ربات Review Bot با دکمه‌ی web_app + دکمه‌ی del ساخت
+   شد و کاربر حذف از لیست را در مینیاپ واقعاً کلیک کرد. (منوی کامل مینیاپ/مدل B هنوز
+   با مسیرهای تلگرامی قدیمی جایگزین کامل نشده — مورد ۴.)
+2. ~~**دکمه‌ی باز کردن اپ از پیام‌های ربات** (همان reviewKeyboard که الان هست) —
+   وقتی MINIAPP_URL روی دامنه‌ی عمومی بود، پیام تست بفرست و کلیک واقعی را چک کن.~~
+   ✅ در Review Bot انجام شد (از discovery، پیام با دکمه‌ی web_app به MINIAPP_URL
+   فرستاده می‌شود).
 3. **deploy به VM `puregh`** (دامنه‌ی دوم مثل `puregh-app.style.dev`): بک‌اند +
    dist روی VM، اتصال DB مستقیم/local (الان SSH forward است)، LLM/GitHub env ها
-   از n8n-معادل، webhook تلگرام (setWebhook) مثل §۱۹/§۲۲.
+   از n8n-معادل، webhook تلگرام (setWebhook) مثل §۱۹/§۲۲. + **انتقال Review Bot به
+   VM `nimux` و publish/active** (الان فقط روی لپ‌تاپ است).
 4. **تصمیم درباره‌ی workflow ربات n8n**: مسیرهای بازبینی/افزودن/زمان ربات مازاد
    می‌شوند؛ نگه‌داشتن فقط برای لیست/منو یا غیرفعال‌کردن کامل (تصمیم کاربر).
 5. **وصل‌کردن شباهت هدف مینیاپ** (`similarPostsText` در llm.js/رoutes.js از
@@ -1581,6 +1640,7 @@ cloudflared tunnel --url http://127.0.0.1:3001   # MINIAPP_URL را برابر t
 | `?initData=` در URL برای تست خارج تلگرام | فقط dev — در prod فقط `window.Telegram.WebApp.initData` |
 | facts/README برای regen | از ردیف خودِ ریپو + raw.githubusercontent (سهمیه‌ی API نمی‌سوزاند) |
 | upsert تکراری | `ON CONFLICT (github_id)` آپدیت می‌کند — ریپو دوباره draft نمی‌گیرد مگر پستش حذف باشد |
+| دکمه‌ی web_app لینک کهنه می‌داد | `MINIAPP_URL` در `backend/.env` و ثابت فایل `puregh-review-bot.ts` **دو جا جدا** است؛ عوض کردن یکی دکمه‌ی خراب می‌دهد. هر دو را همگام کن |
 
 ### فایل‌های کلیدی (برای توسعه‌ی بعدی)
 - `backend/src/security/initdata.js` — اعتبارسنجی initData (جهت HMAC معکوس)

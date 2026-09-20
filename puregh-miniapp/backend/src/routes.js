@@ -81,6 +81,24 @@ router.post('/posts/:id/reject', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- delete from list (remove draft row; repo untouched, can re-discover) ----
+router.post('/posts/:id/delete', async (req, res, next) => {
+  try {
+    const post = await loadDraft(req.params.id);
+    if (!post) return res.status(404).json({ error: 'not_found' });
+    await query(
+      `DELETE FROM posts WHERE id = $1::bigint AND status = 'draft'`,
+      [req.params.id],
+    );
+    const text = '🗑 <b>حذف از لیست</b> — این پست حذف شد (ریپو دستنخورده ماند و در کشفهای بعدی میتواند دوباره بیاید).';
+    await answerCallback(req.body.queryId, '🗑 از لیست حذف شد.');
+    if (post.bot_chat_id && post.bot_message_id) {
+      await editReviewMessage(post.bot_chat_id, post.bot_message_id, text, req.params.id);
+    }
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 // ---- regenerate caption (LLM) ----------------------------------------------
 router.post('/posts/:id/regen', async (req, res, next) => {
   try {

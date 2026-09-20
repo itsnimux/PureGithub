@@ -55,6 +55,10 @@ export async function rejectPost(id, queryId) {
   return api.post(`/api/posts/${id}/reject`, { query_id: queryId || null });
 }
 
+export async function deletePost(id, queryId) {
+  return api.post(`/api/posts/${id}/delete`, { query_id: queryId || null });
+}
+
 export async function regen(id) {
   return api.post(`/api/posts/${id}/regen`, {});
 }

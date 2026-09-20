@@ -5,14 +5,15 @@ import {
 // ---------------------------------------------------------------------------
 // Triggers
 // ---------------------------------------------------------------------------
-const schedule = trigger({
-  type: 'n8n-nodes-base.scheduleTrigger',
-  version: 1.3,
+// Model B: Discovery is launched by the Review Bot (Execute Workflow →
+// «بررسی/شروع دیسکاوری»). The bot passes its whole input through, but
+// Discovery ignores it — everything it needs is queried from the DB.
+const fromReviewBot = trigger({
+  type: 'n8n-nodes-base.executeWorkflowTrigger',
+  version: 1.2,
   config: {
-    name: 'Daily Schedule',
-    parameters: {
-      rule: { interval: [{ field: 'days', triggerAtHour: 9, triggerAtMinute: 0 }] },
-    },
+    name: 'From Review Bot',
+    parameters: { inputSource: 'passthrough' },
   },
 });
 
@@ -1065,98 +1066,36 @@ const joinPostsToSends = node({
 });
 
 // ---------------------------------------------------------------------------
-// Loop Bot Sends — one Telegram message per post, paced.
-// Same done/loop wiring rule as Loop Repos.
+// Send to Review Bot — pass the chosen posts ONCE into the new Review Bot
+// workflow (executeWorkflowTrigger). The bot sends each review message and
+// records bot_chat_id/bot_message_id itself. We wait for it to finish so the
+// run log closes only after the messages are out. Persist payload fields:
+// post_id, repository_id, caption, publish_at, full_name.
 // ---------------------------------------------------------------------------
-const loopBotSends = splitInBatches({
-  version: 3,
+const sendToReviewBot = node({
+  type: 'n8n-nodes-base.executeWorkflow',
+  version: 1.3,
   config: {
-    name: 'Loop Bot Sends',
-    parameters: { batchSize: 1, options: {} },
-  },
-});
-
-// ---------------------------------------------------------------------------
-// Send to Bot — the review message: caption + publish time + a single
-// web_app button that opens the review Mini App (Model B). The publish time
-// appears ONLY here, never in the channel post itself.
-// ---------------------------------------------------------------------------
-const sendToBot = node({
-  type: 'n8n-nodes-base.telegram',
-  version: 1.2,
-  config: {
-    name: 'Send to Bot',
+    name: 'Send to Review Bot',
+    position: [86, 240],
     parameters: {
-      resource: 'message',
-      operation: 'sendMessage',
-      chatId: '5622960785',
-      replyMarkup: 'inlineKeyboard',
-      inlineKeyboard: {
-        rows: [
-          {
-            row: {
-              buttons: [
-                { text: '📋 باز کردن پنل بازبینی', additionalFields: { web_app: { url: "={{ 'https://puregh-app.style.dev/post/' + $json.post_id }}" } } },
-              ],
-            },
-          },
-        ],
-      },
-      text: [
-        '={{ $json.caption',
-        "  + String.fromCharCode(10) + String.fromCharCode(10)",
-        "  + '🕒 زمان انتشار: '",
-        "    + new Date($json.publish_at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })",
-        "  + String.fromCharCode(10)",
-        "  + '⚠️ اگر هیچی لمس نکنی، همین کپشن در همین زمان منتشر می‌شود.' }}",
-      ].join('\n'),
-      additionalFields: {
-        appendAttribution: false,
-        disable_web_page_preview: true,
-        parse_mode: 'HTML',
-      },
+      mode: 'once',
+      source: 'database',
+      workflowId: { __rl: true, mode: 'id', value: 'KfWNSjAws4DQ2bjq' },
+      options: { waitForSubWorkflow: true },
     },
-    credentials: { telegramApi: { name: 'Telegram account' } },
-  },
-});
-
-// ---------------------------------------------------------------------------
-// Save Bot Message — record chat/message id so the review bot (section 5)
-// can edit THAT message in place. post_id comes from Join Posts To Sends via
-// the paired item, NOT from the telegram response ($json here is {ok,result}).
-// ---------------------------------------------------------------------------
-const saveBotMessage = node({
-  type: 'n8n-nodes-base.postgres',
-  version: 2.7,
-  config: {
-    name: 'Save Bot Message',
-    parameters: {
-      operation: 'executeQuery',
-      query: 'UPDATE posts SET bot_chat_id = $1, bot_message_id = $2 WHERE id = $3::bigint;',
-      options: {
-        queryReplacement: [
-        '={{ [',
-        "  String($('Send to Bot').item.json.result.chat.id),",
-        "  Number($('Send to Bot').item.json.result.message_id),",
-        "  $('Join Posts To Sends').item.json.post_id,",
-        '] }}',
-      ].join('\n'),
-        largeNumbersOutput: 'numbers',
-      },
-    },
-    credentials: { postgres: { name: 'Postgres account' } },
   },
 });
 
 const note = sticky(
-  '## Pure GitHub — Discovery\n\nروزانه پروژه\u200cهای Open Source را کشف، امتیازدهی و پیش\u200cنویس کپشن می\u200cسازد، سپس برای بازبینی انسانی به ربات می\u200cفرستد.',
-  [schedule],
+  '## Pure GitHub — Discovery\n\nبا دکمه\u200cی «شروع دیسکاوری» ربات اجرا می\u200cشود، پروژه\u200cهای Open Source را کشف، امتیازدهی و پیش\u200cنویس کپشن می\u200cسازد، سپس برای بازبینی انسانی به Review Bot می\u200cفرستد.',
+  [fromReviewBot],
   { color: 5 },
 );
 
 export default workflow('puregh-discovery', 'Pure GitHub — Discovery')
   .add(note)
-  .add(schedule)
+  .add(fromReviewBot)
   .to(loadEngine)
   .to(buildQueryPlan)
   .to(openRunLog)
@@ -1168,14 +1107,12 @@ export default workflow('puregh-discovery', 'Pure GitHub — Discovery')
   .to(fetchReadmes)
   .to(scoreStageB)
   .to(select16)
-  // section 4: similarity → loop → final selection → persist → bot review
+  // section 4: similarity → loop → final selection → persist → review bot
   .to(purposeSimilarity)
   .to(buildLlmFacts)
   .to(loopRepos
     .onDone(collectJudgments.to(buildPersistPayload).to(upsertRepos)
       .to(savePostsPayload).to(saveFinalPosts).to(joinPostsToSends)
-      .to(loopBotSends
-        .onDone(closeRunLog)
-        .onEachBatch(sendToBot.to(saveBotMessage).to(nextBatch(loopBotSends)))))
+      .to(sendToReviewBot).to(closeRunLog))
     .onEachBatch(generateCaption.to(assembleCaption).to(storeJudgment)
       .to(wait3Minutes).to(nextBatch(loopRepos))));

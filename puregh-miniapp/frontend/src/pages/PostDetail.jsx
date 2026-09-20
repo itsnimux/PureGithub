@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getPost, approve, rejectPost, regen, api } from '../api.js';
+import { getPost, approve, rejectPost, deletePost, regen, api } from '../api.js';
 import { faDateTime, stripHtml, escapeHtml } from '../format.js';
 import ShamsiPicker from '../components/ShamsiPicker.jsx';
 
@@ -16,6 +16,7 @@ export default function PostDetail() {
   const [editing, setEditing] = useState(false);
   const [captionDraft, setCaptionDraft] = useState('');
   const [confirmReject, setConfirmReject] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const load = async () => {
     try {
@@ -104,6 +105,13 @@ export default function PostDetail() {
         >
           {act('regen') ? '…' : '🔄 ساخت دوباره کپشن'}
         </button>
+        <button
+          className="btn btn-ghost"
+          disabled={blocked}
+          onClick={() => setConfirmDelete(true)}
+        >
+          {act('delete') ? '…' : '🗑 حذف از لیست'}
+        </button>
       </div>
 
       {/* Edit caption — plain text; HTML is escaped on save */}
@@ -155,6 +163,26 @@ export default function PostDetail() {
                 {act('reject') ? '…' : 'بله، رد کن'}
               </button>
               <button className="btn btn-ghost" onClick={() => setConfirmReject(false)}>انصراف</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* In-app confirm for delete-from-list (unlike reject, no permanent lock) */}
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={() => setConfirmDelete(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>حذف از لیست</h3>
+            <p>این پست از لیست انتظار حذف می‌شود. ریپو دست‌نخورده می‌ماند و در کشف‌های بعدی ممکن است دوباره بیاید. مطمئنید؟</p>
+            <div className="panel-row">
+              <button
+                className="btn btn-danger"
+                disabled={blocked}
+                onClick={() => { setConfirmDelete(false); run('delete', () => deletePost(id)); }}
+              >
+                {act('delete') ? '…' : 'بله، حذف کن'}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setConfirmDelete(false)}>انصراف</button>
             </div>
           </div>
         </div>
