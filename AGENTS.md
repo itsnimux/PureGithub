@@ -418,9 +418,14 @@ id=11 → پست حذف شد، ریپو `nimux/fixture-review` دست‌نخور
 شد (DB الان ۴ ریپو، صفر draft).
 
 **MINIAPP_URL فعلی (تنها مرجع، ۲۰۲۶-۰۹-۲۰):**
-`https://committees-freelance-merchant-quickly.trycloudflare.com` — در
+`https://second-brother-satin-managers.trycloudflare.com` (پید 76680) — در
 `backend/.env` و در ثابت `MINIAPP_URL` فایل `puregh-review-bot.ts` (دکمه‌ی
-web_app). اگر URL عوض شد هر دو باید همگام شوند.
+web_app) + نود n8n `Send Review`. اگر URL عوض شد هر سه باید همگام شوند.
+
+⚠️ **تشخیص «تانل خراب»:** اغلب اصلاً tunnel خراب نیست — origin پایین است. اگر
+`curl https://<tunnel>/` خطای 530/connection refused داد، اول `ss -ltnp | rg :3001`
+را چک کن و بک‌اند مینیاپ را بالا بیاور. پروسه‌ی cloudflared خودش می‌ماند و بعد از
+بالا آمدن بک‌اند دوباره جواب می‌دهد.
 
 ⚠️ **quick tunnel بعد از هر ریاستارت/کرش URL جدید می‌گیرد و URL قبلی مرده می‌شود**
 (Error 1033 در تلگرام). اگر دکمه‌ی web_app خطای Cloudflare Tunnel داد: اول با
@@ -648,7 +653,9 @@ active نشده** — نوعش و دکمه‌هایش با workflow قدیمی �
 | `Query Parameters must be a string of comma-separated values...` در Save Bot Message (اجرا ۴۲۵) | `queryReplacement` باید آرایه باشد نه رشته‌ی CSV؛ و paired item را از `.first().item.json` بخوان، نه `.json`. راه‌حل درست: `$("Send Review").first().json.result.chat.id` |
 | DNS دوباره مرد (اجرا ۴۲۴) بعد از بوت | همان §۳؛ بعد از هر بوت لپ‌تاپ اگر `EAI_AGAIN` دیدی، `docker exec n8n cat /etc/resolv.conf` را چک کن و با `recreate-n8n.sh` بازساخت. |
 | pin روی Telegram Trigger با wrapper `{body: ...}` | تریگر خودِ update را می‌دهد نه `body` را — pin باید خود update (با `callback_query` مستقیم) باشد. |
-| دکمه‌ی web_app با MINIAPP_URL کهنه | MINIAPP_URL در یک ثابت راز بین `backend/.env` و `puregh-review-bot.ts` مشترک است؛ عوض کردن فقط یکی، دکمه‌ی خراب می‌دهد. هر دو را همگام نگه دار. |
+| دکمه‌ی web_app با MINIAPP_URL کهنه | MINIAPP_URL در `backend/.env` و `puregh-review-bot.ts` و نود n8n `Send Review` مشترک است؛ عوض کردن فقط یکی، دکمه‌ی خراب می‌دهد. هر سه را همگام نگه دار. |
+| «تانل خراب» (530) | اغلب tunnel سالم است و **بک‌اند مینیاپ (پورت 3001) پایین است**. اول `ss -ltnp | rg :3001` را چک کن؛ بالا آوردن بک‌اند کافی است (cloudflared خودش می‌ماند). |
+| `Unexpected end of JSON input` در add-gen | مدل‌های free orca با `json_object` گاهی `content:""` (فقط reasoning_content) برمی‌گردانند → `JSON.parse('')`. رفع: `llm.js` content خالی را retryable می‌کند تا fallback تلاش کند. |
 
 
 ## ۱۰) قالب Caption (نسخه فعلی — تأییدشده)
@@ -1605,16 +1612,45 @@ cloudflared tunnel --url http://127.0.0.1:3001   # MINIAPP_URL را برابر t
 **نکته‌ی سروگیری:** اگر فایل `dist` موجود نباشد صفحه خالی می‌شود؛ توسعه معمولاً
 با `npm run dev` است ولی باندل نهایی فقط از `dist` سرو می‌شود.
 
-### وضعیت فعلی و تست‌ها (۲۰۲۶-۰۹-۱۶)
+### وضعیت فعلی و تست‌ها (۲۰۲۶-۰۹-۲۰)
 تست‌شده و کار می‌کند: لیست انتظار (خالی/پر)، جزئیات پست با ۴ دکمه، تقویم
 شمسی+ساعت با `<TimePicker/>`، Schedule → `publish_at` ISO، ویرایش کپشن متنی و
 ذخیره‌ی HTML-escaped، reject با مودال (بجای window.confirm که در تلگرام خراب
 است)، upsert ریپو با `ON CONFLICT`، دکمه‌ی web_app در پیام ربات.
-بررسی نهایی: `dist` از باندل نهایی (index-DnTOUNuI.js) دقیقاً `plugins:[...time_picker...]`
-دارد (فیکس در پروداکشن هست نه فقط dev). ربات/بک‌اند فعلاً **روی دیسک نیستند**
-(سرور 3001 در حال اجرا نیست، cloudflared هم نیست) — برای تست باید باز شوند.
-`LLM_MODEL`/`LLM_FALLBACK_MODEL` در `.env` خالی است → regen و add/gen هشدار
-می‌دهند و کار نمی‌کنند تا پر شوند (provider/fallback از n8n گرفته شود).
+فرم افزودن حالا **لینک کامل GitHub را هم می‌پذیرد** (`parseFullName` در
+`AddRepo.jsx`: https://…، github.com/…، یا owner/repo — کامیت `f5c8ca3`).
+بررسی نهایی: `dist` از باندل نهایی (index-DMObiDI3.js) فیکس لینک کامل را دارد.
+ربات/بک‌اند **روی دیسک فعال‌اند** (سرور 3001 بالا، cloudflared پید 76680).
+
+#### وضعیت LLM مینیاپ (۲۰۲۶-۰۹-۲۰، کامیت `f5c8ca3`)
+`backend/.env` الان پر است: `LLM_BASE_URL=https://api.orcarouter.ai/v1/` با کلید
+arka، `LLM_MODEL=orcarouter/free`، `LLM_FALLBACK_MODEL=deepseek/deepseek-v4-flash-free`،
+`GITHUB_TOKEN` هم ست شد (از credential ن8ن رمزگشایی شد — /tmp پاک شد).
+
+**تست مدل‌های free (نتیجه‌ی قطعی — کدام را امتحان کردیم):**
+| منبع | نتیجه |
+|---|---|
+| `orcarouter/free` | ✅ یک‌بار 3/3 JSON داد — ولی **429 سخت** در ساعات مصرف‌شده (سهمیهی روز) |
+| `deepseek/deepseek-v4-flash-free` (orca) | 429 مشابه |
+| `z-ai/glm-5.3-flash-free` و siblings (orca) | content خالی با `json_object` — همان خطای «Unexpected end of JSON input» |
+| `nvidia/nemotron-3.5-lightning:free` (OpenRouter) | prose نه JSON |
+| `apinex free/*` | 402 «فقط با subscription» — عملاً رایگان نیست |
+| `kira glm-5.3-flash-free` | 404 |
+| `freemodel` | پایگاه نامعتبر |
+| `opencode serve` (پورت 45585) | 401 — gateway نیست، فقط session-management (تأیید §۸) |
+| `tabi claude-opus-5` | 403 Cloudflare |
+
+نکته‌ی مهم: `llm.js` قبل از json.parse حالا content خالی را **retryable** می‌خواند
+تا fallback تلاش کند — یعنی دیگر خطای «Unexpected end of JSON input» از سمت
+فرانت نمی‌آید؛ فقط پیام `LLM failed: llm X: 429…` رخ می‌دهد وقتی هر دو free در
+rate-limit باشند. نتیجه‌ی عملی: در ساعت‌های مصرف‌شده یا با سهمیه‌ی تمام‌شده،
+add-gen صادقانه شکست می‌خورد تا اینکه خروجی خراب بسازد.
+
+⚠️ اگر یک مدل free بالاخره پاسخ دهد، مدل‌های پایدارِ **غیرfree** orca
+(`qwen/qwen3.6-flash`, `deepseek/deepseek-v4-flash`, `gemini-3.1-flash-lite`)
+تست‌شده‌اند که 2/2 JSON_OK می‌دهند — برای وقتی کاربر بخواهد به paid برود.
+کلیدهای دیگر opencode (`apinex`, `kira`, `tabi`) در `~/.local/share/opencode/auth.json`
+هستند ولی free هایشان اینجا کار نمی‌کنند (جدول بالا).
 
 ### مراحل بعدی — به ترتیب پیشنهادی (کاربر قبلاً چهار مورد را دیده)
 1. **فهم نهایی UX (Model B)**: هر پست جدید به‌جای پیام ربات با ۴ دکمه، به اپ
@@ -1630,6 +1666,11 @@ cloudflared tunnel --url http://127.0.0.1:3001   # MINIAPP_URL را برابر t
    dist روی VM، اتصال DB مستقیم/local (الان SSH forward است)، LLM/GitHub env ها
    از n8n-معادل، webhook تلگرام (setWebhook) مثل §۱۹/§۲۲. + **انتقال Review Bot به
    VM `nimux` و publish/active** (الان فقط روی لپ‌تاپ است).
+   ⚠️ قبل از deploy، تصمیم مدل LLM: مدل‌های free تست‌شده عملاً
+   کار نمی‌کنند (429/402/404 — جدول بالا). اگر کاربر «فقط free» بخواهد، تنها
+   گزینه‌ی واقعی `orcarouter/free` است که با سهمیه‌ی روزانه سخت 429 می‌دهد.
+   برای پروداکشن احتمالاً باید به مدل پایدار orca (`qwen/qwen3.6-flash` یا
+   `deepseek/deepseek-v4-flash`) برود.
 4. **تصمیم درباره‌ی workflow ربات n8n**: مسیرهای بازبینی/افزودن/زمان ربات مازاد
    می‌شوند؛ نگه‌داشتن فقط برای لیست/منو یا غیرفعال‌کردن کامل (تصمیم کاربر).
 5. **وصل‌کردن شباهت هدف مینیاپ** (`similarPostsText` در llm.js/رoutes.js از
