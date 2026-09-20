@@ -25,9 +25,18 @@ async function chatCompletion(model, system, user) {
   if (res.status === 402 || res.status === 429) {
     throw Object.assign(new Error(`llm ${model}: ${res.status}`), { retryable: true });
   }
-  if (!res.ok) throw new Error(`llm ${model}: ${res.status}`);
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw Object.assign(new Error(`llm ${model}: ${res.status} ${errBody.slice(0, 200)}`), { retryable: true });
+  }
   const json = await res.json();
-  return json.choices?.[0]?.message?.content ?? '';
+  const content = json.choices?.[0]?.message?.content ?? '';
+  if (!content || !content.trim()) {
+    // Some reasoning models return content="" with only reasoning_content.
+    // Treat it as retryable so the fallback model gets a chance.
+    throw Object.assign(new Error(`llm ${model}: empty content (reasoning-only)`), { retryable: true });
+  }
+  return content;
 }
 
 export async function generateCaption(factsText, similarPostsText = '') {
@@ -50,7 +59,7 @@ export async function generateCaption(factsText, similarPostsText = '') {
     }
   }
 
-  if (content == null) throw new Error(`LLM failed: ${errors.join('; ')}`);
+  if (content == null || !content.trim()) throw new Error(`LLM failed: ${errors.join('; ') || 'no model produced content'}`);
 
   // The JSON may come wrapped in ```json fences.
   const cleaned = content.replace(/```json\s*/g, '').replace(/```/g, '').trim();

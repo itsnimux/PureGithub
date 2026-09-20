@@ -3,6 +3,16 @@ import { useNavigate } from 'react-router-dom';
 import { addGen, addManual } from '../api.js';
 import { api } from '../api.js';
 
+const GITHUB_URL = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)(?:\/.*)?$/i;
+
+function parseFullName(input) {
+  const t = (input || '').trim();
+  if (!t) return null;
+  if (/^[\w.-]+\/[\w.-]+$/.test(t)) return t;
+  const m = t.match(GITHUB_URL);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
 export default function AddRepo() {
   const navigate = useNavigate();
   const [fullName, setFullName] = useState('');
@@ -12,17 +22,18 @@ export default function AddRepo() {
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
 
-  const valid = /^[\w.-]+\/[\w.-]+$/.test(fullName.trim());
+  const normalized = parseFullName(fullName);
+  const valid = Boolean(normalized);
 
   const submit = async () => {
-    if (!valid) return;
+    if (!normalized) return;
     setBusy(true);
     setError(null);
     setResult(null);
     try {
       const fn = mode === 'gen'
-        ? () => addGen(fullName.trim())
-        : () => addManual(fullName.trim(), caption);
+        ? () => addGen(normalized)
+        : () => addManual(normalized, caption);
       const d = await fn();
       setResult(d);
     } catch (e) {
@@ -39,11 +50,11 @@ export default function AddRepo() {
       <p className="lead">آدرس ریپوی گیت‌هاب را بدهید. کپشن را خودتان بنویسید یا با هوش مصنوعی بسازید.</p>
 
       <div className="panel">
-        <label className="field-label">آدرس ریپو (owner/repo)</label>
+        <label className="field-label">آدرس ریپو (owner/repo یا لینک کامل GitHub)</label>
         <input
           className="input mono"
           dir="ltr"
-          placeholder="owner/repository"
+          placeholder="https://github.com/owner/repository"
           value={fullName}
           onChange={(e) => setFullName(e.target.value)}
         />

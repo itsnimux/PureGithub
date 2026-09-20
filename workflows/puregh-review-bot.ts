@@ -24,7 +24,7 @@ const OWNER_CHAT = '5622960785';
 const TELEGRAM_CRED = { id: 'HbsVKNilG8EOy02X', name: 'Telegram account' };
 const PG_CRED = { id: 'AGFlith4Bqghumgo', name: 'Postgres account' };
 const DISCOVERY_WF_ID = 'hHSwbbOBKRIWStRU'; // Pure GitHub — Discovery
-const MINIAPP_URL = 'https://committees-freelance-merchant-quickly.trycloudflare.com'; // dev tunnel; production uses puregh-app.style.dev
+const MINIAPP_URL = 'https://second-brother-satin-managers.trycloudflare.com'; // dev tunnel; production uses puregh-app.style.dev
 
 // ---------------------------------------------------------------------------
 // Trigger 1 — called by Discovery via Execute Workflow after it selected posts
