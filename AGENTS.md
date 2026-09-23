@@ -1,6 +1,6 @@
 # AGENTS.md — حافظه پروژه Pure GitHub (برای دستیار opencode)
 
-> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-20
+> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-22
 
 ## ۱) پروژه چیست؟
 
@@ -372,6 +372,10 @@ Save Posts Payload → Save Final Posts → Join Posts To Sends → Loop Bot Sen
 فیکسچرهای تست شباهت هدف بعد از تست پاک شدند (`github_id` های ۹۰۰۰۰۱ تا
 ۹۰۰۰۰۵)، و فیکسچرهای تست cooldown هم (۹۹۰۰۰۱ تا ۹۹۰۰۰۸).
 
+**وضعیت ۲۰۲۶-۰۹-۲۲ (پس از تست‌های طرح دو لیست):** ۱ draft واقعی id=14
+(`VoltAgent/awesome-design-md`، verdict strong) | rejected: 7, 8, 9 |
+published: 4, 5, 6, 13. فیکسچرهای هر دو تست E2E (۱۵تایی و فرانت) پاک شدند.
+
 فازهای بعدی: مهاجرت کامل به VM Freestyle (§۱۸/§۱۹ — الان فقط تست است) — ✅
 **همین اتفاق افتاد (۲۰۲۶-۰۹-۱۵): مهاجرت کامل به VM شخصی `nimux` انجام شد.**
 لپ‌تاپ حالا فقط کارخانه‌ی توسعه است. تولید روی `nimux` اجرا می‌شود (پایین، §۲۲).
@@ -390,9 +394,10 @@ Save Posts Payload → Save Final Posts → Join Posts To Sends → Loop Bot Sen
   ربات فرستاده می‌شود؛ ربات پیام با **دکمه‌ی web_app «باز کردن پنل بازبینی»**
   (`MINIAPP_URL/post/:id` → مینیاپ باز می‌شود) + دکمه‌ی **«🗑 حذف از لیست»**
   (`del:<post_id>`) می‌فرستد.
-- `del:` → فقط `DELETE FROM posts WHERE id AND status='draft'` — ریپو دست نمی‌خورد
+- `del:` → `DELETE FROM posts WHERE id AND status IN ('draft', 'approved')` — ریپو دست نمی‌خورد
   (تفاوت با reject که ریپو را ابدی قفل می‌کند؛ حذف از لیست یعنی همان ریپو در
   کشف بعدی می‌تواند دوباره بیاید). بعد از delete: ack + ویرایش پیام (حذف دکمه‌ها).
+  **طرح دو لیست (۲۰۲۶-۰۹-۲۲):** del حالا روی draft **و** approved کار می‌کند.
 - دستور/کالبک **«شروع دیسکاوری»** → `Execute Workflow` روی discovery (mode
   integrated). discovery حالا **تریگرش دیگر Daily Schedule نیست** — یک
   executeWorkflowTrigger v1.2 به نام From Review Bot (این طراحی deliberate است تا
@@ -417,9 +422,9 @@ Save Posts Payload → Save Final Posts → Join Posts To Sends → Loop Bot Sen
 id=11 → پست حذف شد، ریپو `nimux/fixture-review` دست‌نخورده ماند. فیکسچر بعدش پاک
 شد (DB الان ۴ ریپو، صفر draft).
 
-**MINIAPP_URL فعلی (تنها مرجع، ۲۰۲۶-۰۹-۲۰):**
-`https://second-brother-satin-managers.trycloudflare.com` (پید 76680) — در
-`backend/.env` و در ثابت `MINIAPP_URL` فایل `puregh-review-bot.ts` (دکمه‌ی
+**MINIAPP_URL فعلی (تنها مرجع، ۲۰۲۶-۰۹-۲۱):**
+`https://department-resolve-training-arabic.trycloudflare.com` — در
+`backend/.env` و در ثابت `MINIAPP_URL` فایل `puregh-review-bot.ts` (دکمهی
 web_app) + نود n8n `Send Review`. اگر URL عوض شد هر سه باید همگام شوند.
 
 ⚠️ **تشخیص «تانل خراب»:** اغلب اصلاً tunnel خراب نیست — origin پایین است. اگر
@@ -434,6 +439,140 @@ web_app) + نود n8n `Send Review`. اگر URL عوض شد هر سه باید �
 قدیمی به قوت URL کهنه چسبیده است؛ ویرایش پیام کافی نیست). پروسه‌ی cloudflared
 باید با `setsid ... > /tmp/cloudflared.log &` از شل جدا شود تا با بستن ترمینال
 نمیرد.
+
+### ✅ طرح دو لیست — پیاده‌سازی کامل end-to-end (۲۰۲۶-۰۹-۲۲)
+کاربر طرح «دو لیست» را تأیید کرد و گام‌به‌گام اجرا شد (۷ گام تودو؛ در پایان جلسه
+گام ۷ یعنی «آپدیت مموری + کامیت» ناتمام بود — **این آپدیت خودِ همان گام است؛
+کامیت فقط با درخواست صریح کاربر**). جریان جدید:
+
+```
+هر ۱۶ کاندیدای Discovery → ردیف draft + پیام ربات با نظر مدل (verdict + دلیل)
+→ تأیید انسانی در مینیاپ: draft → 'approved' (لیست نهایی) + اسلات انتشار
+→ لیست نهایی دکمه‌های «همین الان بفرست» و «حذف از لیست» دارد
+→ Publisher فقط 'approved' را منتشر می‌کند؛ draftهای لمس‌نشده برای همیشه می‌مانند
+```
+
+**همه‌ی این تغییرات روی لپ‌تاپ (محیط توسعه) اعمال شد؛ هنوز به VM `nimux` منتقل
+نشده** — مهاجرت به‌طور عمدی به بعد از گام ۷ موکول شده بود. یعنی در VM فعلاً نسخه‌ی
+قدیمی Discovery (انتخاب ۸ پس از حلقه) اجرا می‌شود.
+
+#### Discovery — بازسازی (۳۱ → ۳۰ نود، ورژن `53a2fb1c-f163-42d4-b438-5ba65e33cb37`)
+- **معناشناسی جدید: هیچ selectFinal در حلقه نیست — همه‌ی ۱۶ کاندیدا** کپشن + ردیف
+  `draft` + پیام به Review Bot می‌گیرند. انتخاب نهایی=تأیید انسانی در مینیاپ.
+- رینم: `Store Judgment`→`Track Run Stats`، `Collect Judgments`→`Collect Run Stats`،
+  `Build Persist Payload`→`Build Loop Payload`. حذف: `Save Posts Payload` و
+  `Join Posts To Sends`. افزودن: `Build Bot Payload` (کد v2، `runOnceForEachItem`).
+- `Upsert Repos` حالا **۳۸ پارامتر** است: علاوه بر قبل، `verdict`، `verdict_reason`،
+  `category`، `audience`، `evaluated_at`، `evaluated_model` ذخیره می‌شوند.
+  ⚠️ `db/discovery-queries.sql` هنوز ۳۳ پارامتر را مستند می‌کند — بعداً همگام/کامنت.
+- `Save Final Posts` = INSERT تکی per-item:
+  `INSERT INTO posts (repository_id, caption, status, model) VALUES ($1::bigint, $2, 'draft', $3) RETURNING id, repository_id;`
+  با `executeOnce:false` (addNode فیلد executeOnce را سایلنت حذف می‌کند — با
+  `setNodeSettings` ست شود).
+- `buildBotPayload` خروجی `{post_id, repository_id, caption, publish_at:null, full_name, verdict, reason}`.
+- معناشناسی cooldown جدید: verdict **همیشه** ذخیره می‌شود؛ `last_stage='llm'` فقط
+  برای reject (قفل ۳۶۵ روز) و `'selected'` برای strong/maybe (۳ روز). سطح آخر
+  discriminating بین قفل طولانی و کوتاه است، نه خود verdict.
+- `Build Query Plan` در شروع هر اجرا `sd.llmCount`/`sd.draftsCount` را null می‌کند.
+- فایل `workflows/puregh-discovery.ts` بازنویسی و با esbuild بررسی شد (42.4kb)،
+  همگام با n8n. تنها هشدار: `DUPLICATE_SUBNODE_CONNECTION` روی Generate Caption
+  (false-positive شناخته‌شده).
+
+#### Review Bot — کارت پیام و del دودرجه
+- پیام `Send Review` سه بخش: کپشن + خط «🧠 نظر مدل» (نگاشت
+  `{strong:'قوی ✅', maybe:'محتمل 🟡', reject:'ضعیف ❌'}`؛ `reason` اگر باشد) +
+  زمان انتشار (فقط اگر `publish_at` دارد) + «🕒 لیست انتظار — پست تا تأیید و
+  تنظیم زمان در پنل بازبینی منتشر نمی‌شود.»
+- دکمه‌ها: web_app «📋 باز کردن پنل بازبینی» + «🗑 حذف از لیست» (`del:<post_id>`).
+- **`del:` حالا روی `draft` و `approved` هر دو کار می‌کند**:
+  `DELETE FROM posts WHERE id = $1::bigint AND status IN ('draft', 'approved');`
+  (رنیم Gate: `Gate Del Status` با combinator `'or'` و `fallbackOutput='extra'`/
+  `renameFallbackOutput='Not Draft'`؛ `Answer Del Not Draft`).
+- **دکمه‌ی «همین الان بفرست» عمداً در ربات نمی‌آید — فقط در مینیاپ** (تصمیم
+  صریح کاربر ۲۰۲۶-۰۹-۲۱). مسیرهای `del:` و `start:` بدون تغییر ماندند، فقط
+  محتوای پیام/دکمه عوض شد.
+- فایل `workflows/puregh-review-bot.ts` همگام (esbuild 12.8kb).
+
+#### Publisher — claim روی draft و approved
+کوئری claim حالا:
+```
+WHERE (status IN ('draft', 'approved') AND publish_at <= now())
+   OR (status = 'publishing' AND publish_at <= now() - interval '30 minutes')
+```
+- `approved` به محض رسیدن اسلات منتشر می‌شود؛ `draft` لمس‌نشده‌ی بدون `publish_at`
+  ابداً claim نمی‌شود (`NULL <= now()` برقرار نیست).
+- تأیید از live: `approved in claim: True`. بقیه‌ی زنجیره (Send to Channel، Mark
+  Published، reclaim ۳۰ دقیقه‌ای) دست نخورد. فایل `puregh-publisher.ts` همگام.
+
+#### بک‌اند مینیاپ — approve واقعی + send-now + delete دودرجه (`routes.js`/`telegram.js`)
+- `loadPost(id, statuses)` جایگزین `loadDraft`؛ پست published/rejected دیده نمی‌شود؛
+  `verdict`/`verdict_reason` و `model`/`attempt` را هم برمی‌گرداند.
+- `nextPublishSlot()`: آخرین slot ردیف‌های `approved`/`published` + ۲ ساعت؛ نه قبل
+  از now+2h؛ نه قبل از فردا ۰۹:۰۰ تهران.
+- **approve دیگر ack-only نیست**: `draft→approved` + اسلات (اگر زمان دستی نداشت) +
+  ویرایش پیام ربات + ack.
+- **send-now** (فقط approved): تراکنش `BEGIN` → claim اتمیک
+  `UPDATE ... SET status='publishing', publish_at=now() WHERE id=$1 AND status='approved' RETURNING id`
+  (۰ ردیف → 409 `already_sending`) → `sendToChannel(caption)` →
+  `UPDATE ... status='published', telegram_message_id=... WHERE status='publishing'`
+  → `COMMIT`. شکست تلگرام → `ROLLBACK` (پست به approved با اسلات اصلی برمی‌گردد،
+  retryable). رقابت همزمان با Publisher اتمیک است. **قرارداد نهایی:**
+  پست غیر-approved → **404**، درگیری همزمان → **409**، خروجی `{ok, message_id}`.
+- **delete** برای `draft` و `approved` هر دو (حذف از لیست، نه رد دائمی؛ ریپو
+  دست‌نخورده). **reject فقط روی draft** می‌ماند (قفل ابدی ریپو از طریق تریگر).
+- caption/schedule/regen برای `approved` هم باز شد (لیست نهایی قابل ویرایش).
+- `GET /api/posts/final` — لیست نهایی (فقط approved) با verdict/reason از JOIN ریپو،
+  شامل پست‌های بدون زمان.
+- `telegram.js`: `sendToChannel(caption)` جدید (sendMessage، HTML،
+  disable_web_page_preview). `config.js` + `.env.example`: env `CHANNEL_CHAT_ID`
+  (پیش‌فرض کانال `-1004481247137`).
+
+#### فرانت مینیاپ
+- `api.js`: `getFinalPosts()` + `sendNow(id)`؛ `main.jsx`: route `/final`؛
+  `App.jsx`: تب دوم «لیست نهایی» با badge شمارنده (`finalCount`).
+- **`pages/FinalList.jsx` (جدید)**: کارت هر پست approved — نام ریپو + زمان +
+  verdict pill (قوی/محتمل/ضعیف + دلیل) + «🚀 همین الان بفرست» + «🗑 حذف از لیست»
+  (مودال تأیید هر دو).
+- `PostDetail.jsx`: پنل verdict زیر کپشن؛ برای approved دکمه‌ی send-now جایگزین
+  approve/reject شد؛ delete همیشه دیده می‌شود؛ بک‌لینک به `/final` اگر approved.
+- `styles.css`: کلاس‌های `.final-actions`, `.verdict-card`, `.verdict-tag`,
+  `.notice` + دکمه‌ی send-now تمام‌عرض. بیلد Vite موفق.
+
+#### تصمیم‌های این جلسه که قرارداد شدند
+1. دکمه‌ی «همین الان بفرست» فقط در مینیاپ (لیست نهایی) — هرگز در ربات.
+2. approve → `approved` + اسلات بعدی (آخرین اسلات +۲ ساعت).
+3. reject → فقط draft + قفل ابدی ریپو (`human_rejected`).
+4. delete → فقط حذف ردیف پست (draft **و** approved)؛ ریپو آزاد می‌ماند.
+5. draft لمس‌نشده برای همیشه در لیست انتظار می‌ماند.
+6. **نظر مدل (verdict + reason) در پیام ربات و مینیاپ دیده می‌شود، هرگز در کپشن
+   منتشرشده نیامده.**
+
+#### تست‌ها و وضعیت
+- E2E بک‌اند (با `CHANNEL_CHAT_ID=5622960785` تا send-now به چت مالک برود نه
+  کانال واقعی؛ auth با initData تلگرام self-signed): **۱۵/۱۵ پاس**، send-now →
+  `message_id:158`، ردیف published + `telegram_message_id` + sync ریپو از همه.
+  فیکسچرها بعد از تست پاک شدند.
+- E2E فرانت زنده: فیکسچر verdict=strong → approve → اسلات فردا ۹ص تهران →
+  آمدن در `/posts/final` → send-now → پیام واقعی تلگرام **message 159** به چت
+  مالک → از هر دو لیست پاک شد. send-now روی پست draft → 404 درست.
+- DB زنده VM (`127.0.0.1:5433`، db `puregh`): ۱ draft واقعی (id=14،
+  `VoltAgent/awesome-design-md`، verdict strong)؛ rejected: 7, 8, 9؛
+  published: 4, 5, 6, 13.
+- گیت: **همه‌ی تغییرات uncommitted** (AGENTS.md، puregh-discovery.ts،
+  puregh-review-bot.ts، puregh-publisher.ts، backend/.env.example، config.js،
+  routes.js، telegram.js + فرانت + فایل جدید FinalList.jsx).
+
+#### درس‌های فنی این جلسه
+| علامت | علت/رفع |
+|---|---|
+| `ERR: scalar field not found: Close Run Log.query` در بیلدر ops | regex `extractScalar` فقط «' + newline» را می‌بست؛ با `readJsString` (پارس literal و دیکد escapeها) جایگزین شد |
+| هشدار `INVALID_PARAMETER` روی jsCode | در n8n زنده `parameters.jsCode` باید **رشته** باشد نه آرایه → `jsCode.join('\n')` |
+| هشدار `MISSING_EXPRESSION_PREFIX` | expression ها باید پیشوند `=` داشته باشند (SDK خودش اضافه می‌کند، دستی باید گذاشت) |
+| کلاینت MCP بین سشن‌ها ناپدید می‌شود | `/tmp/opencode` پاک می‌شود؛ MCP سرور n8n **stateless** است (notifications/initialized → 202 با بدنه‌ی خالی)؛ کلاینت در شروع هر گام n8n بازسازی شود |
+| رشته با متن فایل تطبیق نمی‌کرد | تفاوت **ZWNJ** (نیم‌فاصله) — دقیق همان متن فایل را کپی کن |
+| فرانت `query_id` می‌فرستاد، بک‌اند `queryId` می‌خواند (باگ همیشگی) | helper `qid()` هر دو شکل را می‌پذیرد (اک/کپشن/send) |
+| فیکسچر غلط ساخته می‌شد | `verdict` روی جدول `repositories` است نه `posts`؛ نام ستون‌ها `gh_created_at`/`gh_pushed_at`؛ `model` روی posts است |
+| مرورگر تلفن/کامپیوتر برای تست در دسترس نبود | تست API زنده با همان initData + بررسی سروشدن بیلد جدید |
 
 ## ۳) محیط اجرا
 
@@ -561,14 +700,14 @@ remote ندارد — هنوز جایی push نشده.
 - `pgvector` از روز اول فعال شد تا فاز RAG نیاز به migrate نداشته باشد.
 - ویو `published_feed` برای مرور سریع.
 
-## ۶) شش workflow در n8n
+## ۶) هفت workflow در n8n
 
 | نام | id | کار |
 |---|---|---|
 | Pure GitHub — Manual Publish | `oSo3G6YhDd8603eu` | مسیر اصلی (قدم ۱) |
-| Pure GitHub — Discovery | `hHSwbbOBKRIWStRU` | قدم ۲ — کشف (بخش ۱-۴؛ تریگرش از Review Bot شلیک می‌شود، نه Schedule) |
+| Pure GitHub — Discovery | `hHSwbbOBKRIWStRU` | قدم ۲ — کشف (بخش ۱-۴؛ تریگرش از Review Bot شلیک می‌شود، نه Schedule). **طرح دو لیست (۲۰۲۶-۰۹-۲۲): ۳۰ نود — همه‌ی ۱۶ کاندیدا → draft + پیام ربات** |
 | Pure GitHub — Telegram Bot | `Zro6k6d8JcAOOpfn` | ربات بازبینی (بخش ۵، فاز ۱-۸ + بازطراحی UX) |
-| Pure GitHub — Review Bot | `KfWNSjAws4DQ2bjq` | **مدل B**: دریافت پست‌های discovery + دکمه web_app مینیاپ + del + شلیک discovery |
+| Pure GitHub — Review Bot | `KfWNSjAws4DQ2bjq` | **مدل B**: دریافت پست‌های discovery + کارت پیام با نظر مدل + دکمه web_app مینیاپ + del (draft/approved) + شلیک discovery |
 | Pure GitHub — Publisher | `1tVlx8NwE7Qe4WWa` | زمان‌بند انتشار (فاز ۸) |
 | Pure GitHub — Provider Check | `gpFQDxJSXQerF0VT` | تست هر provider سازگار OpenAI |
 | Pure GitHub — Telegram Channel Check | `A3VMKNB4oVfkxHJx` | تشخیص خطای chat not found |
@@ -580,6 +719,9 @@ remote ندارد — هنوز جایی push نشده.
 وب‌هوک تلگرام به `https://n8n.style.dev/webhook/...` ثبت شده (تست زنده موفق).
 بقیه غیرفعال. ⚠️ **Review Bot روی لپ‌تاپ ساخته و تست شده، هنوز به VM منتقل و
 active نشده** — نوعش و دکمه‌هایش با workflow قدیمی ربات فرق دارد (بند «مدل B» بالا).
+⚠️ **همه‌ی تغییرات طرح دو لیست (Discovery ۳۰ نود، Review Bot، Publisher) فقط روی
+لپ‌تاپ است؛ VM `nimux` هنوز نسخه‌ی قدیمی Discovery را اجرا می‌کند** — مهاجرت بعد
+از گام ۷ در صف است (کامیت نشده هنوز).
 
 ### زنجیره workflow اصلی
 ```
@@ -656,6 +798,14 @@ active نشده** — نوعش و دکمه‌هایش با workflow قدیمی �
 | دکمه‌ی web_app با MINIAPP_URL کهنه | MINIAPP_URL در `backend/.env` و `puregh-review-bot.ts` و نود n8n `Send Review` مشترک است؛ عوض کردن فقط یکی، دکمه‌ی خراب می‌دهد. هر سه را همگام نگه دار. |
 | «تانل خراب» (530) | اغلب tunnel سالم است و **بک‌اند مینیاپ (پورت 3001) پایین است**. اول `ss -ltnp | rg :3001` را چک کن؛ بالا آوردن بک‌اند کافی است (cloudflared خودش می‌ماند). |
 | `Unexpected end of JSON input` در add-gen | مدل‌های free orca با `json_object` گاهی `content:""` (فقط reasoning_content) برمی‌گردانند → `JSON.parse('')`. رفع: `llm.js` content خالی را retryable می‌کند تا fallback تلاش کند. |
+| `ERR: scalar field not found: Close Run Log.query` در بیلدر ops | regex `extractScalar` فقط «' + newline» را می‌بست. رفع: اسکنر `readJsString` (پارس literal + دیکد `\n`/`\'`/`\"`/`\\`). |
+| هشدار `INVALID_PARAMETER` روی jsCode | در n8n زنده `parameters.jsCode` باید **رشته** باشد نه آرایه → `jsCode.join('\n')`. |
+| `MISSING_EXPRESSION_PREFIX` | expression ها پیشوند `=` می‌خواهند (SDK خودش می‌گذارد؛ دستی باید گذاشت). |
+| کلاینت MCP بین سشن‌ها ناپدید می‌شود | `/tmp/opencode` پاک می‌شود؛ MCP سرور n8n **stateless** است (notifications/initialized → 202 با بدنه‌ی خالی). کلاینت در شروع هر گام n8n بازسازی شود؛ پارس آرگومان سه‌تایی `[cmd, name, paramsArg]`. |
+| رشته با متن فایل تطبیق نمی‌کرد | تفاوت **ZWNJ** (نیم‌فاصله) — دقیق همان متن فایل را کپی کن. |
+| فرانت `query_id` می‌فرستاد، بک‌اند `queryId` می‌خواند | باگ همیشگی (نه فقط این سشن). رفع: helper `qid()` هر دو شکل را می‌پذیرد. |
+| فیکسچر غلط ساخته می‌شد | `verdict` روی جدول `repositories` است نه `posts`؛ نام ستون‌ها `gh_created_at`/`gh_pushed_at`؛ `model` روی posts است. |
+| `send-now` پست را نمی‌فرستاد | پست باید `approved` باشد (نه draft). قرارداد: غیر-approved → 404، درگیری همزمان → 409. |
 
 
 ## ۱۰) قالب Caption (نسخه فعلی — تأییدشده)
@@ -1530,15 +1680,17 @@ Publisher (`1tVlx8NwE7Qe4WWa`).
 
 ### API (همه با هدر `x-telegram-init-data`، فقط owner)
 | مسیر | کار |
-|---|---|
+|---|---|---|
 | `GET /api/posts` | لیست انتظار: drafts، مرتب `publish_at ASC NULLS LAST`، با full_name/model/attempt |
-| `GET /api/posts/:id` | جزئیات یک draft (JOIN ریپو) |
-| `POST /api/posts/:id/approve` | فقط ack — پست دست‌نخورده در publish_at می‌رود (همان قرارداد قبلی) |
-| `POST /api/posts/:id/reject` | `status='rejected', reject_reason='mini-app-reject'` → تریگر DB ریپو را ابدی قفل می‌کند + ویرایش پیام ربات |
-| `POST /api/posts/:id/regen` | ساخت دوباره با LLM (facts از ردیف ریپو + README raw) + `attempt+1` + ویرایش پیام ربات |
+| `GET /api/posts/final` | **لیست نهایی** (فقط approved) با verdict/reason از JOIN ریپو، شامل پست‌های بدون زمان |
+| `GET /api/posts/:id` | جزئیات پست (`loadPost(id, statuses)` — published/rejected دیده نمی‌شود؛ verdict/verdict_reason و model/attempt هم) |
+| `POST /api/posts/:id/approve` | **دیگر ack-only نیست**: `draft→approved` + اسلات انتشار (`nextPublishSlot()`: آخرین اسلات approved/published +۲ ساعت، نه قبل از now+2h، نه قبل از فردا ۰۹ تهران) + ویرایش پیام ربات |
+| `POST /api/posts/:id/send-now` | **(طرح دو لیست) فقط approved**: تراکنش claim اتمیک `approved→publishing` → sendToChannel → published؛ شکست تلگرام → ROLLBACK (به approved برمی‌گردد). قرارداد: غیر-approved → **404**، درگیری همزمان → **409**، خروجی `{ok, message_id}` |
+| `POST /api/posts/:id/reject` | `status='rejected', reject_reason='mini-app-reject'` → تریگر DB ریپو را ابدی قفل می‌کند + ویرایش پیام ربات. **فقط روی draft** |
+| `POST /api/posts/:id/regen` | ساخت دوباره با LLM (facts از ردیف ریپو + README raw) + `attempt+1` + ویرایش پیام ربات (برای approved هم باز است) |
 | `POST /api/posts/:id/caption` | کپشن دستی (متنی — فرانت escape می‌کند) |
 | `POST /api/posts/:id/schedule` | `publish_at` از ISO پذیرفته؛ هر دو (بدون/با زمان موجود) را برمی‌گرداند |
-| `POST /api/posts/:id/delete` | **حذف از لیست**: فقط `DELETE` پستِ draft — ریپو دست نمی‌خورد (می‌تواند در کشف بعدی دوباره بیاید). ack + ویرایش پیام ربات. تست زنده: کلیک کاربر در مینیاپ روی پست ۱۱ ✅ |
+| `POST /api/posts/:id/delete` | **حذف از لیست**: DELETE پستِ draft **و** approved — ریپو دست نمی‌خورد (می‌تواند در کشف بعدی دوباره بیاید). ack + ویرایش پیام ربات |
 | `POST /api/add/gen` | متادیتا+README→facts→LLM→assemble→upsert ریپو(`source='submission'`)→پست draft |
 | `POST /api/add/manual` | بدون LLM؛ فقط متادیتا + کپشن داده‌شده |
 
@@ -1612,11 +1764,13 @@ cloudflared tunnel --url http://127.0.0.1:3001   # MINIAPP_URL را برابر t
 **نکته‌ی سروگیری:** اگر فایل `dist` موجود نباشد صفحه خالی می‌شود؛ توسعه معمولاً
 با `npm run dev` است ولی باندل نهایی فقط از `dist` سرو می‌شود.
 
-### وضعیت فعلی و تست‌ها (۲۰۲۶-۰۹-۲۰)
+### وضعیت فعلی و تست‌ها (۲۰۲۶-۰۹-۲۰؛ دو لیست ۲۰۲۶-۰۹-۲۲ — بالا را ببین)
 تست‌شده و کار می‌کند: لیست انتظار (خالی/پر)، جزئیات پست با ۴ دکمه، تقویم
 شمسی+ساعت با `<TimePicker/>`، Schedule → `publish_at` ISO، ویرایش کپشن متنی و
 ذخیره‌ی HTML-escaped، reject با مودال (بجای window.confirm که در تلگرام خراب
 است)، upsert ریپو با `ON CONFLICT`، دکمه‌ی web_app در پیام ربات.
+تست‌شده‌ی جدید (طرح دو لیست، ۲۰۲۶-۰۹-۲۲): approve واقعی (draft→approved+اسلات)،
+لیست نهایی `/posts/final`، send-now (پیام واقعی message 159)، delete دودرجه.
 فرم افزودن حالا **لینک کامل GitHub را هم می‌پذیرد** (`parseFullName` در
 `AddRepo.jsx`: https://…، github.com/…، یا owner/repo — کامیت `f5c8ca3`).
 بررسی نهایی: `dist` از باندل نهایی (index-DMObiDI3.js) فیکس لینک کامل را دارد.
@@ -1656,16 +1810,20 @@ add-gen صادقانه شکست می‌خورد تا اینکه خروجی خر�
 1. **فهم نهایی UX (Model B)**: هر پست جدید به‌جای پیام ربات با ۴ دکمه، به اپ
    برود؛ «تایید/رد/زمان/کپشن» از داخل اپ؛ ربات فقط منو/اطلاع باشد.
    ✅ **انجام شد (۲۰۲۶-۰۹-۲۰):** ربات Review Bot با دکمه‌ی web_app + دکمه‌ی del ساخت
-   شد و کاربر حذف از لیست را در مینیاپ واقعاً کلیک کرد. (منوی کامل مینیاپ/مدل B هنوز
-   با مسیرهای تلگرامی قدیمی جایگزین کامل نشده — مورد ۴.)
+   شد و کاربر حذف از لیست را در مینیاپ واقعاً کلیک کرد.
+   ✅ **کامل‌تر شد (طرح دو لیست، ۲۰۲۶-۰۹-۲۲):** همه‌ی ۱۶ کاندیدا → draft +
+   کارت ربات با نظر مدل → approve در مینیاپ → لیست نهایی با send-now/delete.
+   (مسیرهای تلگرامی قدیمی بازبینی هنوز در workflow ربات مازادند — مورد ۴.)
 2. ~~**دکمه‌ی باز کردن اپ از پیام‌های ربات** (همان reviewKeyboard که الان هست) —
    وقتی MINIAPP_URL روی دامنه‌ی عمومی بود، پیام تست بفرست و کلیک واقعی را چک کن.~~
    ✅ در Review Bot انجام شد (از discovery، پیام با دکمه‌ی web_app به MINIAPP_URL
    فرستاده می‌شود).
-3. **deploy به VM `puregh`** (دامنه‌ی دوم مثل `puregh-app.style.dev`): بک‌اند +
+3. **deploy به VM `nimux`/`puregh`** (دامنه‌ی دوم مثل `puregh-app.style.dev`): بک‌اند +
    dist روی VM، اتصال DB مستقیم/local (الان SSH forward است)، LLM/GitHub env ها
-   از n8n-معادل، webhook تلگرام (setWebhook) مثل §۱۹/§۲۲. + **انتقال Review Bot به
-   VM `nimux` و publish/active** (الان فقط روی لپ‌تاپ است).
+   از n8n-معادل، webhook تلگرام (setWebhook) مثل §۱۹/§۲۲.
+   ⚠️ **بعد از گام ۷ طرح دو لیست**: انتقال سه workflow لپ‌تاپ (Discovery ۳۰ نود،
+   Review Bot، Publisher) + بک‌اند/فرانت جدید به VM و publish/active — الان فقط روی
+   لپ‌تاپ است و VM نسخه‌ی قدیمی Discovery را اجرا می‌کند.
    ⚠️ قبل از deploy، تصمیم مدل LLM: مدل‌های free تست‌شده عملاً
    کار نمی‌کنند (429/402/404 — جدول بالا). اگر کاربر «فقط free» بخواهد، تنها
    گزینه‌ی واقعی `orcarouter/free` است که با سهمیه‌ی روزانه سخت 429 می‌دهد.

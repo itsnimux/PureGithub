@@ -66,4 +66,16 @@ export async function sendOwnerMessage(text, keyboard) {
   return call('sendMessage', params);
 }
 
+// Publish a caption straight to the channel (the send-now path from the Mini
+// App). The n8n Publisher is the scheduled path; this is the on-demand one;
+// both mark the post 'published' afterwards.
+export async function sendToChannel(caption) {
+  return call('sendMessage', {
+    chat_id: config.channelChat,
+    text: caption,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+  });
+}
+
 export { call };

@@ -48,6 +48,8 @@ const buildQueryPlan = node({
       jsCode: [
         "const sd = $getWorkflowStaticData('global');",
         'sd.judged = null;',
+        'sd.llmCount = 0;',
+        'sd.draftsCount = 0;',
         '',
         "const eng = $('Load Engine').first().json.bundle;",
         "const PUREGH = new Function(eng + '; return PUREGH;')();",
@@ -684,7 +686,8 @@ const assembleCaption = node({
 // repos_seen/new/on_cooldown/passed_stage_a/readmes_fetched/passed_stage_b
 // are not aggregated inside the loop (lesson from execution 110: .all() on
 // loop-internal nodes only sees the last iteration). sent_to_llm and
-// drafts_created come from Collect Judgments, which ran once after the loop.
+// drafts_created come from Collect Run Stats (counters accumulated in the loop
+// via workflow static data).
 // ---------------------------------------------------------------------------
 const closeRunLog = node({
   type: 'n8n-nodes-base.postgres',
@@ -699,8 +702,8 @@ const closeRunLog = node({
         '={{ [',
         "  $('Open Run Log').first().json.id,",
         '  0, 0, 0, 0, 0, 0,',
-        "  $('Collect Judgments').first().json.judgedCount,",
-        "  $('Collect Judgments').first().json.finalPosts.length,",
+        "  $('Collect Run Stats').first().json.llmCount,",
+        "  $('Collect Run Stats').first().json.draftsCount,",
         '  null,',
         '] }}',
       ].join('\n'),
@@ -712,40 +715,26 @@ const closeRunLog = node({
 });
 
 // ---------------------------------------------------------------------------
-// Store Judgment — runs INSIDE the loop (one candidate per iteration).
-// Appends the complete judgment to workflow static data, a run-long
-// accumulator that survives loop iterations (lesson from execution 110:
-// $('X').all() on loop-internal nodes only sees the last iteration).
-// Nothing is written to the DB during the loop — selectFinal runs AFTER it.
+// Track Run Stats — runs INSIDE the loop (one candidate per iteration). The
+// funnel counters accumulate in workflow static data (lesson from execution
+// 110: $('X').all() on loop-internal nodes only sees the last iteration).
+// Everything else happens eagerly in the loop now: the repo is upserted, the
+// draft post created, and the review message sent to the bot immediately.
 // ---------------------------------------------------------------------------
-const storeJudgment = node({
+const trackRunStats = node({
   type: 'n8n-nodes-base.code',
   version: 2,
   config: {
-    name: 'Store Judgment',
+    name: 'Track Run Stats',
     parameters: {
       mode: 'runOnceForEachItem',
       jsCode: [
-        'const a = $json;',
-        "const staticData = $getWorkflowStaticData('global');",
-        "if (!Array.isArray(staticData.judged)) staticData.judged = [];",
-        '',
-        "const candidates = $('Select 16').all().map((it) => it.json);",
-        "const cand = candidates.find((c) => String(c.repo.id) === String(a.repo_id));",
-        "if (!cand) throw new Error('no Select 16 candidate matches repo_id ' + a.repo_id);",
-        '',
-        'staticData.judged.push({',
-        '  verdict: a.verdict,',
-        "  reason: a.reason ?? '',",
-        '  category: a.category ?? null,',
-        "  audience: JSON.parse(a.audience_json ?? '[]') || [],",
-        '  caption: a.caption,',
-        '  repo: cand.repo,       // raw repo — upsert + telegram need full_name etc.',
-        "  readme: cand.readme ?? '',",
-        '  scored: cand.scored,   // normalized scored — selectFinal + upsert read .lane/.total',
-        '});',
-        '',
-        'return { json: { stored: true, repo_id: a.repo_id, verdict: a.verdict } };',
+        "const sd = $getWorkflowStaticData('global');",
+        'if (!Number.isFinite(sd.llmCount)) sd.llmCount = 0;',
+        'if (!Number.isFinite(sd.draftsCount)) sd.draftsCount = 0;',
+        'sd.llmCount += 1;',
+        'sd.draftsCount += 1;',
+        'return { json: { ok: true } };',
       ].join('\n'),
     },
   },
@@ -780,140 +769,94 @@ const loopRepos = splitInBatches({
 });
 
 // ---------------------------------------------------------------------------
-// Collect Judgments — AFTER the loop: read the accumulator, run selectFinal
-// over ALL 16 judgments (caps decided with every result in view, per the
-// approved design), assign publish times (even 2-hour spacing starting
-// tomorrow 09:00 Tehran = 05:30 UTC; Tehran is UTC+3:30 with no DST).
+// Collect Run Stats — AFTER the loop: read the accumulated counters from
+// workflow static data and zero them for the next run. No selectFinal anymore
+// — every captioned candidate is saved as a draft and sent to the bot (model B
+// review design, 2026-09-21).
 // ---------------------------------------------------------------------------
-const collectJudgments = node({
+const collectRunStats = node({
   type: 'n8n-nodes-base.code',
   version: 2,
   config: {
-    name: 'Collect Judgments',
+    name: 'Collect Run Stats',
     parameters: {
       mode: 'runOnceForAllItems',
       jsCode: [
-        "const staticData = $getWorkflowStaticData('global');",
-        'const judged = staticData.judged || [];',
-        'if (!Array.isArray(judged) || judged.length === 0) {',
-        "  throw new Error('هیچ قضاوتی از حلقه نرسید (judged خالی است)');",
-        '}',
-        '',
-        "const eng = $('Load Engine').first().json.bundle;",
-        "const PUREGH = new Function(eng + '; return PUREGH;')();",
-        "const run = $('Dedup and Collect').first().json;",
-        'const limit = run.finalSelectionSize || 8;',
-        '',
-        'const res = PUREGH.selectFinal(judged, limit);',
-        '',
-        'const HOUR = 3600000;',
-        'const nowMs = Date.now();',
-        'const d = new Date(nowMs + 24 * HOUR);',
-        'd.setUTCHours(0, 0, 0, 0);',
-        'const base = d.getTime() + 5.5 * HOUR;',
-        '',
-        "const chosenIds = new Set(res.chosen.map((j) => String(j.repo.id)));",
-        'const finalPosts = res.chosen.map((j, i) => ({',
-        '  verdict: j.verdict,',
-        "  reason: j.reason ?? '',",
-        '  category: j.category ?? null,',
-        '  audience: Array.isArray(j.audience) ? j.audience : [],',
-        '  caption: j.caption,',
-        '  repo: j.repo,',
-        "  readme: j.readme ?? '',",
-        '  scored: j.scored,',
-        '  publish_at: new Date(base + i * 2 * HOUR).toISOString(),',
-        '}));',
-        '',
-        'const notChosen = judged',
-        "  .filter((j) => !chosenIds.has(String(j.repo.id)))",
-        '  .map((j) => ({',
-        "    repo: j.repo, scored: j.scored, readme: j.readme ?? '',",
-        "    verdict: j.verdict === 'reject' ? 'reject' : 'keep',",
-        '    isDuplicatePurpose: !!j.isDuplicatePurpose,',
-        "    reason: j.reason ?? '',",
-        '  }));',
-        '',
-        'staticData.judged = null;',
-        '',
-        'return [{ json: {',
-        '  seed: run.seed,',
-        '  finalPosts,',
-        '  notChosen,',
-        "  skipped: res.skipped.map((s) => ({ full_name: s.j.repo.full_name, why: s.why })),",
-        '  laneCount: res.laneCount,',
-        '  catCount: res.catCount,',
-        '  judgedCount: judged.length,',
+        "const sd = $getWorkflowStaticData('global');",
+        'const out = [{ json: {',
+        '  llmCount: Math.max(0, sd.llmCount || 0),',
+        '  draftsCount: Math.max(0, sd.draftsCount || 0),',
         '} }];',
+        'sd.llmCount = 0;',
+        'sd.draftsCount = 0;',
+        'return out;',
       ].join('\n'),
     },
   },
 });
 
 // ---------------------------------------------------------------------------
-// Build Persist Payload — one SQL parameter array per repo (8 chosen + the
-// rest), matching query 3 of db/discovery-queries.sql. The reject verdict is
-// written ONLY for LLM-rejected / duplicate-purpose repos; a not-chosen but
-// approved repo keeps verdict NULL so cooldown reads it as notSelected (3 days)
-// — writing 'reject' here would trip posts_sync_human_rejected? No — that
-// trigger fires on posts.status, not repositories.verdict; but verdict='reject'
-// starts a 365-day llmRejected cooldown, which is wrong for a repo the model
-// actually liked.
+// Build Loop Payload — per-item, INSIDE the loop. For the current candidate:
+// builds the 38-parameter upsert row (query 3 of discovery-queries.sql,
+// extended with the LLM-verdict columns) plus the metadata the Save Post node
+// needs. Cooldown semantics are respected via last_stage: rejected repos get
+// 'llm' (365d, the model already said no), strong/maybe keep 'selected' (3d, so
+// a resolved draft lets the repo be re-considered soon). The verdict itself IS
+// always persisted — the Review Bot and the miniapp display it.
 // ---------------------------------------------------------------------------
-const buildPersistPayload = node({
+const buildLoopPayload = node({
   type: 'n8n-nodes-base.code',
   version: 2,
   config: {
-    name: 'Build Persist Payload',
+    name: 'Build Loop Payload',
     parameters: {
-      mode: 'runOnceForAllItems',
+      mode: 'runOnceForEachItem',
       jsCode: [
-        "const cj = $('Collect Judgments').first().json;",
+        'const a = $json;',
+        "const candidates = $('Select 16').all().map((it) => it.json);",
+        "const cand = candidates.find((c) => String(c.repo.id) === String(a.repo_id));",
+        "if (!cand) throw new Error('no Select 16 candidate matches repo_id ' + a.repo_id);",
         '',
-        'function repoRow(repo, readme, scored, lastStage, rejectVerdict) {',
-        '  const r = repo;',
-        '  const nowMs = Date.now();',
-        "  const created = Date.parse(r.created_at ?? '') || nowMs;",
-        "  const pushed = Date.parse(r.pushed_at ?? '') || nowMs;",
-        '  const ageDays = Math.max(1, (nowMs - created) / 86400000);',
-        '  const readmeBytes = (readme ?? "").length;',
-        '  const hasDemo = /\\.(gif|mp4|webm)|asciinema|youtube\\.com|youtu\\.be|demo|screenshot|preview/i.test(String(readme ?? ""));',
-        '  return {',
-        '    json: {',
-        '      params: [',
-        '        Number(r.id), r.full_name, r.owner, r.name, "https://github.com/" + r.full_name,',
-        '        r.description ?? null, r.homepage || null,',
-        '        Number(r.stars ?? 0), Number(r.forks ?? 0), Number(r.open_issues ?? 0),',
-        '        r.language ?? null, JSON.stringify(r.topics ?? []), r.license ?? null, null,',
-        '        !!r.fork, !!r.archived, !!r.is_template, r.default_branch ?? null,',
-        '        r.created_at ?? null, r.pushed_at ?? null, readmeBytes, hasDemo,',
-        '        Math.round(Math.max(0, (nowMs - pushed) / 86400000)), Math.round(ageDays),',
-        '        Number((Number(r.stars ?? 0) / ageDays).toFixed(3)),',
-        '        Number(scored.quality), Number(scored.relevance), Number(scored.total),',
-        '        scored.lane, JSON.stringify(scored.lanes ?? []),',
-        '        null, lastStage, r.found_by ?? null,',
-        '      ],',
-        '      verdict: rejectVerdict ?? null,',
-        '    },',
-        '  };',
-        '}',
+        'const r = cand.repo;',
+        'const readme = cand.readme ?? "";',
+        'const scored = cand.scored;',
+        'const nowMs = Date.now();',
+        "const created = Date.parse(r.created_at ?? '') || nowMs;",
+        "const pushed = Date.parse(r.pushed_at ?? '') || nowMs;",
+        'const ageDays = Math.max(1, (nowMs - created) / 86400000);',
+        'const readmeBytes = readme.length;',
+        'const hasDemo = /\\.(gif|mp4|webm)|asciinema|youtube\\.com|youtu\\.be|demo|screenshot|preview/i.test(String(readme));',
         '',
-        'const rows = [];',
-        'for (const p of cj.finalPosts) {',
-        "  rows.push(repoRow(p.repo, p.readme, p.scored, 'selected', null));",
-        '}',
-        'for (const n of cj.notChosen) {',
-        "  const isReject = n.verdict === 'reject' || n.isDuplicatePurpose;",
-        "  rows.push(repoRow(n.repo, n.readme, n.scored, isReject ? 'llm' : 'selected', isReject ? 'reject' : null));",
-        '}',
-        'return rows;',
+        "const rejected = a.verdict === 'reject';",
+        'let model = null;',
+        "try { model = $('AI Model - Primary').params.model.value ?? null; } catch (e) { model = null; }",
+        '',
+        'const verdict = rejected ? "reject" : (a.verdict ?? null);',
+        'const params = [',
+        '  Number(r.id), r.full_name, r.owner, r.name, "https://github.com/" + r.full_name,',
+        '  r.description ?? null, r.homepage || null,',
+        '  Number(r.stars ?? 0), Number(r.forks ?? 0), Number(r.open_issues ?? 0),',
+        '  r.language ?? null, JSON.stringify(r.topics ?? []), r.license ?? null, null,',
+        '  !!r.fork, !!r.archived, !!r.is_template, r.default_branch ?? null,',
+        '  r.created_at ?? null, r.pushed_at ?? null, readmeBytes, hasDemo,',
+        '  Math.round(Math.max(0, (nowMs - pushed) / 86400000)), Math.round(ageDays),',
+        '  Number((Number(r.stars ?? 0) / ageDays).toFixed(3)),',
+        '  Number(scored.quality), Number(scored.relevance), Number(scored.total),',
+        '  scored.lane, JSON.stringify(scored.lanes ?? []),',
+        '  null, rejected ? "llm" : "selected", r.found_by ?? null,',
+        '  verdict, a.reason ?? "", a.category ?? null, a.audience_json ?? "[]", model,',
+        '];',
+        '',
+        'return { json: { params, caption: a.caption, repo_id: a.repo_id, model } };',
       ].join('\n'),
     },
   },
 });
 
 // ---------------------------------------------------------------------------
-// Upsert Repos — query 3 of db/discovery-queries.sql, one row per item.
+// Upsert Repos — query 3 of db/discovery-queries.sql, one row per item. Now
+// also writes the LLM verdict columns (the bot and the miniapp display them;
+// cooldown still keys on docs verdict='reject' + last_stage='llm').
 // ---------------------------------------------------------------------------
 const upsertRepos = node({
   type: 'n8n-nodes-base.postgres',
@@ -930,7 +873,8 @@ const upsertRepos = node({
         '    gh_created_at, gh_pushed_at, readme_bytes, has_demo,',
         '    days_since_push, repo_age_days, star_velocity,',
         '    source, last_quality, last_relevance, last_total, lane, lanes,',
-        '    last_reject_reason, last_stage, found_by',
+        '    last_reject_reason, last_stage, found_by,',
+        '    verdict, verdict_reason, category, audience, evaluated_at, evaluated_model',
         ') VALUES (',
         '    $1, $2, $3, $4, $5, $6, $7,',
         '    $8, $9, $10, $11, $12::jsonb, $13, $14,',
@@ -938,7 +882,7 @@ const upsertRepos = node({
         '    $19, $20, $21, $22,',
         '    $23, $24, $25,',
         "    'discovery', $26, $27, $28, $29, $30::jsonb,",
-        '    $31, $32, $33',
+        '    $31, $32, $33, $34, $35, $36, $37::jsonb, now(), $38',
         ')',
         'ON CONFLICT (github_id) DO UPDATE SET',
         '    full_name          = EXCLUDED.full_name,',
@@ -966,6 +910,12 @@ const upsertRepos = node({
         '    last_reject_reason = EXCLUDED.last_reject_reason,',
         '    last_stage         = EXCLUDED.last_stage,',
         '    found_by           = COALESCE(repositories.found_by, EXCLUDED.found_by),',
+        '    verdict            = EXCLUDED.verdict,',
+        '    verdict_reason     = EXCLUDED.verdict_reason,',
+        '    category           = EXCLUDED.category,',
+        '    audience           = EXCLUDED.audience,',
+        '    evaluated_at       = EXCLUDED.evaluated_at,',
+        '    evaluated_model    = EXCLUDED.evaluated_model,',
         '    times_seen         = repositories.times_seen + 1,',
         '    last_checked       = now()',
         'RETURNING id, github_id;',
@@ -977,36 +927,10 @@ const upsertRepos = node({
 });
 
 // ---------------------------------------------------------------------------
-// Save Posts Payload — one item carrying the posts INSERT payload as JSON.
-// repository_id is resolved inside SQL by github_id (rows were just upserted).
-// ---------------------------------------------------------------------------
-const savePostsPayload = node({
-  type: 'n8n-nodes-base.code',
-  version: 2,
-  config: {
-    name: 'Save Posts Payload',
-    parameters: {
-      mode: 'runOnceForAllItems',
-      jsCode: [
-        "const cj = $('Collect Judgments').first().json;",
-        'let model = null;',
-        "try { model = $('AI Model - Primary').params.model.value ?? null; } catch (e) { model = null; }",
-        'const postsJson = JSON.stringify(cj.finalPosts.map((p) => ({',
-        '  github_id: Number(p.repo.id),',
-        '  caption: p.caption,',
-        '  model: model,',
-        '  publish_at: p.publish_at,',
-        '})));',
-        'return [{ json: { postsJson: postsJson, chosenCount: cj.finalPosts.length } }];',
-      ].join('\n'),
-    },
-  },
-});
-
-// ---------------------------------------------------------------------------
-// Save Final Posts — bulk INSERT via jsonb_to_recordset, one node run.
-// executeOnce is set via setNodeSettings (the addNode operation silently
-// drops executeOnce — AGENTS.md §2).
+// Save Post — one draft row per candidate, created INSIDE the loop right after
+// the repo is upserted (repository_id = the fresh repositories.id). publish_at
+// is NULL by design: approval assigns the slot in the review flow, and the
+// Publisher (workflow puregh-publisher) only claims status='approved'.
 // ---------------------------------------------------------------------------
 const saveFinalPosts = node({
   type: 'n8n-nodes-base.postgres',
@@ -1015,15 +939,15 @@ const saveFinalPosts = node({
     name: 'Save Final Posts',
     parameters: {
       operation: 'executeQuery',
-      query: [
-        'INSERT INTO posts (repository_id, caption, status, model, publish_at)',
-        "SELECT r.id, p.caption, 'draft', p.model, p.publish_at::timestamptz",
-        '  FROM jsonb_to_recordset($1::jsonb) AS p(github_id bigint, caption text, model text, publish_at text)',
-        '  JOIN repositories r ON r.github_id = p.github_id',
-        'RETURNING id, repository_id;',
-      ].join('\n'),
+      query: 'INSERT INTO posts (repository_id, caption, status, model)\nVALUES ($1::bigint, $2, \'draft\', $3)\nRETURNING id, repository_id;',
       options: {
-        queryReplacement: '={{ $json.postsJson ? [ $json.postsJson ] : [] }}',
+        queryReplacement: [
+          '={{ [',
+          '  String($json.id),',
+          "  $('Build Loop Payload').item.json.caption,",
+          "  $('Build Loop Payload').item.json.model ?? null,",
+          '] }}',
+        ].join('\n'),
         largeNumbersOutput: 'numbers',
       },
     },
@@ -1032,34 +956,30 @@ const saveFinalPosts = node({
 });
 
 // ---------------------------------------------------------------------------
-// Join Posts To Sends — pair the freshly inserted posts.id with the chosen
-// posts (same order), one item per post for the send loop.
+// Build Bot Payload — per-item. Pairs the fresh posts.id with the caption and
+// the model opinion, and passes the item into the Review Bot (step 2) along
+// with the fields it already knew (publish_at is always null here — the bot
+// shows no publish line for an unscheduled draft).
 // ---------------------------------------------------------------------------
-const joinPostsToSends = node({
+const buildBotPayload = node({
   type: 'n8n-nodes-base.code',
   version: 2,
   config: {
-    name: 'Join Posts To Sends',
+    name: 'Build Bot Payload',
     parameters: {
-      mode: 'runOnceForAllItems',
+      mode: 'runOnceForEachItem',
       jsCode: [
-        "const cj = $('Collect Judgments').first().json;",
-        'const saved = $input.all().map((it) => it.json);',
-        'if (saved.length !== cj.finalPosts.length) {',
-        "  throw new Error('Save Final Posts returned ' + saved.length + ' rows but ' + cj.finalPosts.length + ' posts were chosen');",
-        '}',
-        'const out = [];',
-        'for (let i = 0; i < cj.finalPosts.length; i++) {',
-        '  const p = cj.finalPosts[i];',
-        '  out.push({ json: {',
-        '    post_id: saved[i].id,',
-        '    repository_id: saved[i].repository_id,',
-        '    caption: p.caption,',
-        '    publish_at: p.publish_at,',
-        '    full_name: p.repo.full_name,',
-        '  } });',
-        '}',
-        'return out;',
+        'const saved = $json;',
+        "const a = $('Assemble Caption').item.json;",
+        'return { json: {',
+        '  post_id: saved.id,',
+        '  repository_id: saved.repository_id,',
+        '  caption: a.caption,',
+        '  publish_at: null,',
+        '  full_name: a.full_name,',
+        '  verdict: a.verdict,',
+        "  reason: a.reason ?? '',",
+        '} };',
       ].join('\n'),
     },
   },
@@ -1107,12 +1027,11 @@ export default workflow('puregh-discovery', 'Pure GitHub — Discovery')
   .to(fetchReadmes)
   .to(scoreStageB)
   .to(select16)
-  // section 4: similarity → loop → final selection → persist → review bot
+  // section 4: similarity → loop (all 16 captioned + persisted + sent to bot)
   .to(purposeSimilarity)
   .to(buildLlmFacts)
   .to(loopRepos
-    .onDone(collectJudgments.to(buildPersistPayload).to(upsertRepos)
-      .to(savePostsPayload).to(saveFinalPosts).to(joinPostsToSends)
-      .to(sendToReviewBot).to(closeRunLog))
-    .onEachBatch(generateCaption.to(assembleCaption).to(storeJudgment)
-      .to(wait3Minutes).to(nextBatch(loopRepos))));
+    .onDone(collectRunStats.to(closeRunLog))
+    .onEachBatch(generateCaption.to(assembleCaption).to(buildLoopPayload)
+      .to(upsertRepos).to(saveFinalPosts).to(buildBotPayload)
+      .to(sendToReviewBot).to(trackRunStats).to(wait3Minutes).to(nextBatch(loopRepos))));

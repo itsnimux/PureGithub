@@ -1,11 +1,16 @@
 import { Router } from 'express';
 import { query } from './db.js';
-import { answerCallback, editReviewMessage } from './telegram.js';
+import config from './config.js';
+import { answerCallback, editReviewMessage, sendToChannel } from './telegram.js';
 import { getRepoMetadata, getReadmeRaw } from './github.js';
 import { generateCaption } from './llm.js';
 import { assembleCaption } from './caption.js';
 
 const router = Router();
+
+// Telegram callback query id: the Mini App sends `query_id`; keep accepting
+// the old `queryId` shape too. best-effort ack only.
+const qid = (body) => body?.query_id ?? body?.queryId ?? null;
 
 // Helper: load a draft post joined with its repo. Only drafts are reviewable.
 async function loadDraft(id) {
@@ -17,6 +22,44 @@ async function loadDraft(id) {
     [id],
   );
   return r.rows[0] ?? null;
+}
+
+// Load a post in any of the given statuses, joined with its repo, including
+// the model's verdict so the UI can show it on both lists.
+async function loadPost(id, statuses) {
+  const r = await query(
+    `SELECT p.id, p.caption, p.publish_at, p.bot_chat_id, p.bot_message_id,
+            p.status, p.model, p.attempt,
+            r.id AS repository_id, r.full_name, r.owner, r.name,
+            r.verdict, r.verdict_reason
+       FROM posts p JOIN repositories r ON r.id = p.repository_id
+      WHERE p.id = $1::bigint AND p.status = ANY($2::text[])`,
+    [id, statuses],
+  );
+  return r.rows[0] ?? null;
+}
+
+const faDateTime = (d) => new Date(d).toLocaleString('fa-IR', {
+  timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric',
+  month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
+});
+
+// Next free publishing slot (final list): last slot of approved/published + 2h,
+// never sooner than now+2h, never before tomorrow 09:00 Tehran.
+async function nextPublishSlot() {
+  const r = await query(
+    `SELECT MAX(publish_at) AS last
+       FROM posts
+      WHERE status IN ('approved', 'published')
+        AND publish_at IS NOT NULL`,
+  );
+  const lastUtc = r.rows[0].last ? new Date(r.rows[0].last).getTime() : 0;
+  const teheran = 3.5 * 3600e3; // UTC+3:30, no DST
+  const now = Date.now();
+  const wall = new Date(now + teheran);
+  const tom9Wall = Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate() + 1, 9, 0, 0);
+  const min = Math.max(lastUtc ? lastUtc + 2 * 3600e3 : 0, now + 2 * 3600e3, tom9Wall - teheran);
+  return new Date(min).toISOString();
 }
 
 function reviewText(caption, publishAt) {
@@ -34,9 +77,24 @@ function reviewText(caption, publishAt) {
 router.get('/posts', async (_req, res, next) => {
   try {
     const r = await query(
-      `SELECT p.id, r.full_name, p.caption, p.status, p.publish_at, p.model, p.attempt
+      `SELECT p.id, r.full_name, p.caption, p.status, p.publish_at, p.model, p.attempt,
+              r.verdict, r.verdict_reason
          FROM posts p JOIN repositories r ON r.id = p.repository_id
         WHERE p.status = 'draft'
+        ORDER BY p.publish_at ASC NULLS LAST, p.id DESC`,
+    );
+    res.json({ posts: r.rows });
+  } catch (e) { next(e); }
+});
+
+// ---- final list (approved posts, waiting for their slot / send-now) ---------
+router.get('/posts/final', async (_req, res, next) => {
+  try {
+    const r = await query(
+      `SELECT p.id, r.full_name, p.caption, p.status, p.publish_at, p.model, p.attempt,
+              r.verdict, r.verdict_reason
+         FROM posts p JOIN repositories r ON r.id = p.repository_id
+        WHERE p.status = 'approved'
         ORDER BY p.publish_at ASC NULLS LAST, p.id DESC`,
     );
     res.json({ posts: r.rows });
@@ -46,20 +104,72 @@ router.get('/posts', async (_req, res, next) => {
 // ---- single post ----------------------------------------------------------
 router.get('/posts/:id', async (req, res, next) => {
   try {
-    const post = await loadDraft(req.params.id);
+    const post = await loadPost(req.params.id, ['draft', 'approved']);
     if (!post) return res.status(404).json({ error: 'not_found' });
     res.json({ post });
   } catch (e) { next(e); }
 });
 
-// ---- approve (ack only; publisher sends it at publish_at) ------------------
+// ---- approve (moves the post to the final list with a publishing slot) -----
 router.post('/posts/:id/approve', async (req, res, next) => {
   try {
-    const post = await loadDraft(req.params.id);
+    const post = await loadPost(req.params.id, ['draft']);
     if (!post) return res.status(404).json({ error: 'not_found' });
-    await answerCallback(req.body.queryId, 'تایید شد ✅ همین کپشن در زمان مقرر منتشر می‌شود.');
-    // The review message now lives in the mini app; nothing else to update.
-    res.json({ ok: true });
+    // Keep a user-chosen time if already set; otherwise assign the next slot.
+    const slotAt = post.publish_at || (await nextPublishSlot());
+    await query(
+      `UPDATE posts SET status = 'approved', publish_at = $1
+        WHERE id = $2::bigint AND status = 'draft'`,
+      [slotAt, req.params.id],
+    );
+    await answerCallback(qid(req.body), 'تایید شد ✅ به لیست نهایی اضافه شد.');
+    if (post.bot_chat_id && post.bot_message_id) {
+      await editReviewMessage(
+        post.bot_chat_id, post.bot_message_id,
+        `✅ <b>تایید شد</b> — این پست برای انتشار تأیید شد.\n🕒 اسلات انتشار: ${faDateTime(slotAt)}`,
+        req.params.id,
+      );
+    }
+    res.json({ ok: true, status: 'approved', publish_at: slotAt });
+  } catch (e) { next(e); }
+});
+
+// ---- send-now (publish an approved post immediately) ------------------------
+// Atomic like the n8n Publisher claim: approved -> publishing in one UPDATE;
+// a second tap or a concurrent Publisher tick can never double-send. The
+// whole flow runs in one transaction, so a Telegram failure rolls back to
+// 'approved' (with its original slot) and stays retryable.
+router.post('/posts/:id/send-now', async (req, res, next) => {
+  try {
+    const post = await loadPost(req.params.id, ['approved']);
+    if (!post) return res.status(404).json({ error: 'not_found' });
+
+    await query('BEGIN');
+    try {
+      const claim = await query(
+        `UPDATE posts SET status = 'publishing', publish_at = now()
+          WHERE id = $1::bigint AND status = 'approved' RETURNING id`,
+        [req.params.id],
+      );
+      if (claim.rowCount === 0) {
+        await query('ROLLBACK');
+        return res.status(409).json({ error: 'already_sending' });
+      }
+      const sent = await sendToChannel(post.caption);
+      if (!sent || !sent.message_id) throw new Error('telegram send returned no message_id');
+      await query(
+        `UPDATE posts SET status = 'published', published_at = now(),
+                telegram_chat_id = $1, telegram_message_id = $2
+          WHERE id = $3::bigint AND status = 'publishing'`,
+        [config.channelChat, String(sent.message_id), req.params.id],
+      );
+      await query('COMMIT');
+      await answerCallback(qid(req.body), 'منتشر شد ✅');
+      res.json({ ok: true, message_id: sent.message_id });
+    } catch (e) {
+      await query('ROLLBACK');
+      throw e;
+    }
   } catch (e) { next(e); }
 });
 
@@ -73,7 +183,7 @@ router.post('/posts/:id/reject', async (req, res, next) => {
         WHERE id = $1::bigint AND status = 'draft'`,
       [req.params.id],
     );
-    await answerCallback(req.body.queryId, 'رد شد ❌ پست از لیست انتظار حذف شد.');
+    await answerCallback(qid(req.body), 'رد شد ❌ پست از لیست انتظار حذف شد.');
     if (post.bot_chat_id && post.bot_message_id) {
       await editReviewMessage(post.bot_chat_id, post.bot_message_id, '❌ <b>رد شد</b> — این پست از لیست انتظار حذف شد.', req.params.id);
     }
@@ -81,17 +191,17 @@ router.post('/posts/:id/reject', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ---- delete from list (remove draft row; repo untouched, can re-discover) ----
+// ---- delete from list (remove draft/approved row; repo untouched) -----------
 router.post('/posts/:id/delete', async (req, res, next) => {
   try {
-    const post = await loadDraft(req.params.id);
+    const post = await loadPost(req.params.id, ['draft', 'approved']);
     if (!post) return res.status(404).json({ error: 'not_found' });
     await query(
-      `DELETE FROM posts WHERE id = $1::bigint AND status = 'draft'`,
+      `DELETE FROM posts WHERE id = $1::bigint AND status IN ('draft', 'approved')`,
       [req.params.id],
     );
     const text = '🗑 <b>حذف از لیست</b> — این پست حذف شد (ریپو دستنخورده ماند و در کشفهای بعدی میتواند دوباره بیاید).';
-    await answerCallback(req.body.queryId, '🗑 از لیست حذف شد.');
+    await answerCallback(qid(req.body), '🗑 از لیست حذف شد.');
     if (post.bot_chat_id && post.bot_message_id) {
       await editReviewMessage(post.bot_chat_id, post.bot_message_id, text, req.params.id);
     }
@@ -102,7 +212,7 @@ router.post('/posts/:id/delete', async (req, res, next) => {
 // ---- regenerate caption (LLM) ----------------------------------------------
 router.post('/posts/:id/regen', async (req, res, next) => {
   try {
-    const post = await loadDraft(req.params.id);
+    const post = await loadPost(req.params.id, ['draft', 'approved']);
     if (!post) return res.status(404).json({ error: 'not_found' });
 
     // Rebuild facts from the stored repo row (matching Build Regen Facts).
@@ -156,7 +266,7 @@ router.post('/posts/:id/regen', async (req, res, next) => {
 
     await query(
       `UPDATE posts SET caption = $1, attempt = attempt + 1
-        WHERE id = $2::bigint AND status = 'draft'`,
+        WHERE id = $2::bigint AND status IN ('draft', 'approved')`,
       [assembled.caption, req.params.id],
     );
 
@@ -172,13 +282,13 @@ router.post('/posts/:id/regen', async (req, res, next) => {
 // ---- manual caption ----------------------------------------------------------
 router.post('/posts/:id/caption', async (req, res, next) => {
   try {
-    const post = await loadDraft(req.params.id);
+    const post = await loadPost(req.params.id, ['draft', 'approved']);
     if (!post) return res.status(404).json({ error: 'not_found' });
     const caption = String(req.body.caption ?? '').trim();
     if (!caption) return res.status(400).json({ error: 'empty_caption' });
 
     await query(
-      `UPDATE posts SET caption = $1 WHERE id = $2::bigint AND status = 'draft'`,
+      `UPDATE posts SET caption = $1 WHERE id = $2::bigint AND status IN ('draft', 'approved')`,
       [caption, req.params.id],
     );
     if (post.bot_chat_id && post.bot_message_id) {
@@ -191,13 +301,13 @@ router.post('/posts/:id/caption', async (req, res, next) => {
 // ---- schedule (calendar date+time from the mini app) -------------------------
 router.post('/posts/:id/schedule', async (req, res, next) => {
   try {
-    const post = await loadDraft(req.params.id);
+    const post = await loadPost(req.params.id, ['draft', 'approved']);
     if (!post) return res.status(404).json({ error: 'not_found' });
     const at = new Date(req.body.publish_at);
     if (Number.isNaN(at.getTime())) return res.status(400).json({ error: 'bad_date' });
 
     await query(
-      `UPDATE posts SET publish_at = $1 WHERE id = $2::bigint AND status = 'draft'`,
+      `UPDATE posts SET publish_at = $1 WHERE id = $2::bigint AND status IN ('draft', 'approved')`,
       [at.toISOString(), req.params.id],
     );
     if (post.bot_chat_id && post.bot_message_id) {

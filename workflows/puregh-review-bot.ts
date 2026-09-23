@@ -1,16 +1,21 @@
-// Pure GitHub — Review Bot (Model B, 2026-09-19)
+// Pure GitHub — Review Bot (Model B, 2026-09-21)
 //
 // The new lightweight bot. Two triggers:
 //   1. From Discovery (executeWorkflowTrigger) — the Discovery workflow calls
 //      this workflow via Execute Workflow and passes the chosen posts. For
-//      each post we send ONE Telegram message with TWO buttons:
+//      each post we send ONE Telegram message:
+//        - caption + model verdict (verdict/reason are part of the payload)
 //        - «باز کردن پنل بازبینی» — web_app button opening the Mini App
 //          (MINIAPP_URL/post/:id), Model B review lives inside the app
 //        - «حذف از لیست» — callback del:<post_id> removes ONLY the posts row
-//          (DELETE FROM posts), the repository row is never touched
+//          (DELETE FROM posts), the repository row is never touched.
+//          Works for status draft AND approved (undo approval = free the repo).
 //   2. Bot Updates (telegramTrigger) — handles
 //        - callback del:<id>  → delete post + edit the message + ack
 //        - text «شروع دیسکاوری» → Execute Workflow → Discovery workflow
+//
+// «همین الان بفرست» deliberately lives ONLY in the Mini App (final list),
+// never as a bot button — decided 2026-09-21.
 //
 // Discovery is launched by the bot via Execute Workflow (inputSource passthrough
 // is NOT needed by the bot itself — it passes the whole input it received).
@@ -24,7 +29,7 @@ const OWNER_CHAT = '5622960785';
 const TELEGRAM_CRED = { id: 'HbsVKNilG8EOy02X', name: 'Telegram account' };
 const PG_CRED = { id: 'AGFlith4Bqghumgo', name: 'Postgres account' };
 const DISCOVERY_WF_ID = 'hHSwbbOBKRIWStRU'; // Pure GitHub — Discovery
-const MINIAPP_URL = 'https://second-brother-satin-managers.trycloudflare.com'; // dev tunnel; production uses puregh-app.style.dev
+const MINIAPP_URL = 'https://department-resolve-training-arabic.trycloudflare.com'; // dev tunnel; production uses puregh-app.style.dev
 
 // ---------------------------------------------------------------------------
 // Trigger 1 — called by Discovery via Execute Workflow after it selected posts
@@ -49,7 +54,7 @@ const loopPosts = splitInBatches({
   },
 });
 
-// Send the review message: caption + publish time + two buttons.
+// Send the review message: caption + model verdict + (pending notice) + two buttons.
 const sendReview = node({
   type: 'n8n-nodes-base.telegram',
   version: 1.2,
@@ -76,9 +81,11 @@ const sendReview = node({
       text: expr(
         '={{ $json.caption\n'
           + "  + '\\n\\n'\n"
-          + "  + '🕒 زمان انتشار: ' + new Date($json.publish_at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })\n"
-          + "  + '\\n'\n"
-          + "  + '⚠️ اگر هیچی لمس نکنی، همین کپشن در همین زمان منتشر میشود.' }}",
+          + "  + '🧠 نظر مدل: ' + ({ strong: 'قوی ✅', maybe: 'محتمل 🟡', reject: 'ضعیف ❌' }[$json.verdict] ?? $json.verdict ?? '—')\n"
+          + "  + ($json.reason ? '\\n' + $json.reason : '')\n"
+          + "  + '\\n\\n'\n"
+          + "  + ($json.publish_at ? '🕒 زمان انتشار: ' + new Date($json.publish_at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + '\\n' : '')\n"
+          + "  + '🕒 لیست انتظار — پست تا تایید و تنظیم زمان در پنل بازبینی منتشر نمی‌شود.' }}",
       ),
       additionalFields: {
         appendAttribution: false,
@@ -206,7 +213,7 @@ const loadDelPost = node({
   },
 });
 
-// Only drafts can be removed; already published/rejected posts are left alone.
+// Only pending + approved posts can be removed; published/rejected are left alone.
 const gateDelStatus = switchCase({
   version: 3.4,
   config: {
@@ -215,7 +222,10 @@ const gateDelStatus = switchCase({
     parameters: {
       rules: {
         values: [
-          { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: expr('{{ $json.status }}'), operator: { type: 'string', operation: 'equals' }, rightValue: 'draft' }], combinator: 'and' } },
+          { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [
+            { leftValue: expr('{{ $json.status }}'), operator: { type: 'string', operation: 'equals' }, rightValue: 'draft' },
+            { leftValue: expr('{{ $json.status }}'), operator: { type: 'string', operation: 'equals' }, rightValue: 'approved' },
+          ], combinator: 'or' } },
         ],
       },
       options: { fallbackOutput: 'extra', renameFallbackOutput: 'Not Draft' },
@@ -231,7 +241,7 @@ const deleteDelPost = node({
     position: [1424, 0],
     parameters: {
       operation: 'executeQuery',
-      query: 'DELETE FROM posts WHERE id = $1::bigint AND status = \'draft\';',
+      query: 'DELETE FROM posts WHERE id = $1::bigint AND status IN (\'draft\', \'approved\');',
       options: {
         queryReplacement: expr('{{ [ $json.id ] }}'),
         largeNumbersOutput: 'numbers',
@@ -252,7 +262,7 @@ const answerDel = node({
       resource: 'callback',
       operation: 'answerQuery',
       queryId: expr('{{ $("Parse Update").first().json.queryId }}'),
-      additionalFields: { text: 'حذف شد 🗑 پست از لیست انتظار حذف شد (ریپو دست‌نخورده).' },
+      additionalFields: { text: 'حذف شد 🗑 پست از لیست حذف شد (ریپو دست‌نخورده).' },
     },
     credentials: { telegramApi: TELEGRAM_CRED },
   },
@@ -271,7 +281,7 @@ const editDelMessage = node({
       messageType: 'message',
       chatId: expr('{{ $("Load Del Post").first().json.bot_chat_id }}'),
       messageId: expr('{{ String($("Load Del Post").first().json.bot_message_id) }}'),
-      text: '🗑 <b>از لیست انتظار حذف شد</b> — این پست دیگر منتشر نمی‌شود.',
+      text: '🗑 <b>از لیست حذف شد</b> — این پست دیگر منتشر نمی‌شود.',
       replyMarkup: 'none',
       additionalFields: { appendAttribution: false, parse_mode: 'HTML' },
     },
@@ -364,7 +374,7 @@ const answerUnknown = node({
 });
 
 const note = sticky(
-  '## Pure GitHub — Review Bot\n\nModel B: Discovery posts arrive here via Execute Workflow; each post gets a message with a web_app open-app button + a «حذف از لیست» button (posts-only delete). Text «شروع دیسکاوری» runs the Discovery workflow.\n\nThe old 59-node bot stays untouched.',
+  '## Pure GitHub — Review Bot\n\nModel B: Discovery posts arrive here via Execute Workflow; each post gets a message with caption + model verdict line + a web_app open-app button + a «حذف از لیست» button (posts-only delete; works for draft & approved). «همین الان بفرست» is Mini-App-only. Text «شروع دیسکاوری» runs the Discovery workflow.\n\nThe old 59-node bot stays untouched.',
   [fromDiscovery],
   { color: 5 },
 );

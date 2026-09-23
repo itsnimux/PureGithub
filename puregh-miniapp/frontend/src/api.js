@@ -43,12 +43,20 @@ export async function getPosts() {
   return api.get('/api/posts');
 }
 
+export async function getFinalPosts() {
+  return api.get('/api/posts/final');
+}
+
 export async function getPost(id) {
   return api.get(`/api/posts/${id}`);
 }
 
 export async function approve(id, queryId) {
   return api.post(`/api/posts/${id}/approve`, { query_id: queryId || null });
+}
+
+export async function sendNow(id) {
+  return api.post(`/api/posts/${id}/send-now`, {});
 }
 
 export async function rejectPost(id, queryId) {

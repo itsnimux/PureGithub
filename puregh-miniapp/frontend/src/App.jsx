@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link, NavLink } from 'react-router-dom';
-import { getPosts } from './api.js';
+import { getPosts, getFinalPosts } from './api.js';
 
 export default function App({ children }) {
   const [count, setCount] = useState(0);
+  const [finalCount, setFinalCount] = useState(0);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -18,10 +19,12 @@ export default function App({ children }) {
 
   const refresh = useCallback(async () => {
     try {
-      const data = await getPosts();
-      setCount(data.posts?.length ?? 0);
+      const [w, f] = await Promise.all([getPosts(), getFinalPosts()]);
+      setCount(w.posts?.length ?? 0);
+      setFinalCount(f.posts?.length ?? 0);
     } catch {
       setCount(0);
+      setFinalCount(0);
     }
   }, []);
 
@@ -39,6 +42,9 @@ export default function App({ children }) {
         <nav className="topnav">
           <NavLink to="/" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             لیست انتظار {count > 0 && <span className="badge">{count}</span>}
+          </NavLink>
+          <NavLink to="/final" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+            لیست نهایی {finalCount > 0 && <span className="badge">{finalCount}</span>}
           </NavLink>
           <NavLink to="/add" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             + افزودن

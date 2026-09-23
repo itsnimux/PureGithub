@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getPost, approve, rejectPost, deletePost, regen, api } from '../api.js';
+import { getPost, approve, rejectPost, deletePost, regen, sendNow, api } from '../api.js';
 import { faDateTime, stripHtml, escapeHtml } from '../format.js';
 import ShamsiPicker from '../components/ShamsiPicker.jsx';
+
+const VERDICT_LABEL = { strong: 'قوی ✅', maybe: 'محتمل 🟡', reject: 'ضعیف ❌' };
 
 export default function PostDetail() {
   const { id } = useParams();
@@ -17,6 +19,7 @@ export default function PostDetail() {
   const [captionDraft, setCaptionDraft] = useState('');
   const [confirmReject, setConfirmReject] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmSend, setConfirmSend] = useState(false);
 
   const load = async () => {
     try {
@@ -60,12 +63,15 @@ export default function PostDetail() {
   if (error) return <div className="state"><p className="state-title">خطا</p><p className="state-sub">{error}</p></div>;
   if (!post) return <div className="state"><p className="state-sub">در حال بارگذاری…</p></div>;
 
+  const isApproved = post.status === 'approved';
   const act = (label) => busy === label;
   const blocked = busy !== null;
 
+  const backTo = isApproved ? '/final' : '/';
+
   return (
     <section className="review">
-      <button className="back" onClick={() => navigate('/')}>→ بازگشت به لیست</button>
+      <button className="back" onClick={() => navigate(backTo)}>→ بازگشت به لیست</button>
 
       <div className="review-head">
         <h1 className="review-repo">{post.full_name}</h1>
@@ -80,24 +86,45 @@ export default function PostDetail() {
         </div>
       </div>
 
+      {/* Model verdict — what the LLM judged about this repo */}
+      {post.verdict && (
+        <div className="verdict-card">
+          <span className={'verdict-tag verdict-' + post.verdict}>{VERDICT_LABEL[post.verdict] ?? post.verdict}</span>
+          <span className="verdict-label">نظر مدل</span>
+          {post.verdict_reason && <p className="verdict-reason">{stripHtml(post.verdict_reason)}</p>}
+        </div>
+      )}
+
       {notice && <div className={`notice notice-${notice.kind}`}>{notice.text}</div>}
 
       {/* Actions */}
       <div className="actions">
-        <button
-          className="btn btn-ok"
-          disabled={blocked}
-          onClick={() => run('approve', () => approve(id))}
-        >
-          {act('approve') ? '…' : '✓ تایید'}
-        </button>
-        <button
-          className="btn btn-danger"
-          disabled={blocked}
-          onClick={() => setConfirmReject(true)}
-        >
-          {act('reject') ? '…' : '✕ رد'}
-        </button>
+        {isApproved ? (
+          <button
+            className={'btn btn-ok ' + 'btn-wide'}
+            disabled={blocked}
+            onClick={() => setConfirmSend(true)}
+          >
+            {act('send-now') ? '…' : '🚀 همین الان بفرست'}
+          </button>
+        ) : (
+          <button
+            className="btn btn-ok"
+            disabled={blocked}
+            onClick={() => run('approve', () => approve(id))}
+          >
+            {act('approve') ? '…' : '✓ تایید'}
+          </button>
+        )}
+        {!isApproved && (
+          <button
+            className="btn btn-danger"
+            disabled={blocked}
+            onClick={() => setConfirmReject(true)}
+          >
+            {act('reject') ? '…' : '✕ رد'}
+          </button>
+        )}
         <button
           className="btn btn-ghost"
           disabled={blocked}
@@ -187,13 +214,34 @@ export default function PostDetail() {
           </div>
         </div>
       )}
+
+      {/* In-app confirm for send-now — publishes immediately */}
+      {confirmSend && (
+        <div className="modal-overlay" onClick={() => setConfirmSend(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>انتشار همین حالا</h3>
+            <p>این پست همین الان در کانال منتشر می‌شود. مطمئنید؟</p>
+            <div className="panel-row">
+              <button
+                className="btn btn-danger"
+                disabled={blocked}
+                onClick={() => { setConfirmSend(false); run('send-now', () => sendNow(id)); }}
+              >
+                {act('send-now') ? '…' : 'بله، بفرست'}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setConfirmSend(false)}>انصراف</button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
 
 function StatusLine({ publishAt, status }) {
-  const step = status === 'draft' ? (publishAt ? 2 : 1) : 3;
-  const label = status === 'draft' ? (publishAt ? 'زمان‌بندی شده' : 'بدون زمان') : status;
+  const step = status === 'approved' ? 3 : status === 'draft' ? (publishAt ? 2 : 1) : 3;
+  const label = status === 'draft' ? (publishAt ? 'زمان‌بندی شده' : 'بدون زمان')
+    : status === 'approved' ? 'تایید شده — در لیست نهایی' : status;
   return (
     <div className="statusline">
       <span className={'sdot' + (step >= 1 ? ' on' : '')} />

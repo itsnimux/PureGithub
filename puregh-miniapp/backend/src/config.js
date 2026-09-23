@@ -11,6 +11,7 @@ const config = {
   },
   botToken: process.env.TELEGRAM_BOT_TOKEN || '',
   ownerChat: String(process.env.OWNER_CHAT || '5622960785'),
+  channelChat: String(process.env.CHANNEL_CHAT_ID || '-1004481247137'),
   miniAppUrl: process.env.MINIAPP_URL || '',
   llm: {
     baseUrl: process.env.LLM_BASE_URL || '',

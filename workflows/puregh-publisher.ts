@@ -1,10 +1,12 @@
 // Pure GitHub — Publisher (phase 8: scheduled channel publishing)
 //
-// Every 10 minutes: atomically claim due waiting-list posts (status 'draft',
-// publish_at <= now()), send their captions to the channel, then mark them
-// published with the channel message id. A post left stuck in 'publishing'
-// for more than 30 minutes becomes reclaimable, so a crashed run heals on
-// the next tick instead of hanging forever.
+// Every 10 minutes: atomically claim due posts — status 'draft' (will be
+// killed, e.g. legacy scheduled drafts) OR 'approved' (final list) with
+// publish_at <= now() — send their captions to the channel, then mark them
+// published with the channel message id. Untouched drafts (publish_at NULL)
+// never match the predicate, so they stay in the waiting list forever.
+// A post left stuck in 'publishing' for more than 30 minutes becomes
+// reclaimable, so a crashed run heals on the next tick instead of hanging.
 //
 // Nodes in n8n (id=1tVlx8NwE7Qe4WWa) are the source of truth for execution;
 // this file mirrors them for review and rebuilds.
@@ -28,7 +30,8 @@ const everyTenMinutes = trigger({
 // Atomic claim: rows move to 'publishing' inside the same statement that
 // selects them, with FOR UPDATE SKIP LOCKED so two concurrent runs can never
 // claim (and thus send) the same post. The OR branch implements the
-// 30-minute stuck-post reclaim (option A, approved by the user).
+// 30-minute stuck-post reclaim (option A, approved by the user). status IN
+// ('draft','approved') — approved posts go out as soon as their slot is due.
 const claimBatch = node({
   type: 'n8n-nodes-base.postgres',
   version: 2.7,
@@ -43,7 +46,7 @@ const claimBatch = node({
         "     SET status = 'publishing'",
         '   WHERE id IN (',
         '     SELECT id FROM posts',
-        "      WHERE (status = 'draft' AND publish_at <= now())",
+        "      WHERE (status IN ('draft', 'approved') AND publish_at <= now())",
         "         OR (status = 'publishing' AND publish_at <= now() - interval '30 minutes')",
         '      ORDER BY publish_at ASC',
         '      LIMIT 4',

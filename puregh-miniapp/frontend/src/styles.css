@@ -333,6 +333,36 @@ button { font-family: inherit; cursor: pointer; }
 .seg-btn { background: none; border: none; border-radius: 7px; padding: 9px; font-size: 13.5px; font-weight: 700; color: var(--muted); }
 .seg-btn.on { background: var(--surface-2); color: var(--text); box-shadow: 0 0 0 1px var(--border); }
 
+/* ---- final list ----------------------------------------------------------- */
+.final-actions { display: flex; gap: 10px; }
+.final-actions .btn { flex: 1; }
+.final-actions .btn-ok { flex: 2; }
+
+/* model verdict chip + reason */
+.verdict-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+}
+.verdict-tag {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.verdict-tag.verdict-strong { color: var(--green); background: rgba(52, 211, 153, 0.10); border: 1px solid rgba(52, 211, 153, 0.28); }
+.verdict-tag.verdict-maybe { color: var(--amber); background: rgba(251, 191, 36, 0.10); border: 1px solid rgba(251, 191, 36, 0.28); }
+.verdict-tag.verdict-reject { color: var(--red); background: rgba(248, 113, 113, 0.10); border: 1px solid rgba(248, 113, 113, 0.28); }
+.verdict-label { color: var(--muted); font-size: 12px; margin-right: 2px; }
+.verdict-reason { margin: 4px 0 0; width: 100%; color: var(--muted); font-size: 12.5px; line-height: 1.8; }
+.verdict-reason:last-child:first-child { margin-top: 0; }
+
 /* ---- reduced motion ----------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
