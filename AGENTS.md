@@ -1,6 +1,6 @@
 # AGENTS.md — حافظه پروژه Pure GitHub (برای دستیار opencode)
 
-> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-23
+> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-24
 
 ## ۱) پروژه چیست؟
 
@@ -652,6 +652,8 @@ db/discovery-queries.sql    SQL قدم ۲ (cooldown، شباهت هدف، upsert
 scripts/setup.sh            بالا آوردن DB + اتصال n8n به شبکه + تست DNS
 scripts/recreate-n8n.sh     بازساخت کانتینر n8n با DNS ثابت (تنها ثبت آرگومان‌های run آن)
 scripts/backup.sh           بکاپ DB + کلید رمز credential های n8n
+scripts/up.sh               بالا آوردن کل استک لپ‌تاپ: DB → n8n → بک‌اند 3001 → build فرانت
+                            → تونل‌های quick خودکار (پیش‌فرض) / --local بدون تونل (پایین، بند جدید)
 workflows/*.ts              کد SDK همه‌ی workflow ها (منبع حقیقت؛ review-bot هم اینجا است)
 puregh-miniapp/             مینیاپ تلگرام (فرانت React/Vite + بک‌اند Express) — §۲۳
 
@@ -678,6 +680,33 @@ discovery/regression.mjs    ۳۷ فیکسچر مرجع در ۴ گروه (بای�
 `discovery/` هیچ اثری نداشت چون اجرا از کپی ریشه می‌خواند. همین باگ در
 `calibrate.mjs` هم بود (از ریشه اصلاً اجرا نمی‌شد). هر دو حالا
 `import.meta.dirname` استفاده می‌کنند.
+
+### ✅ `scripts/up.sh` — بالا آوردن کل استک در یک فرمان (۲۰۲۶-۰۹-۲۴)
+«چطور کل پروژه را بعد از ری‌بوت بالا بیاوریم» دیگر سؤال نیست. `./scripts/up.sh`
+به‌ترتیب: DB (docker compose) → n8n (فقط اگر نباشد) → بک‌اند مینیاپ :3001 →
+build فرانت (فقط اگر سورس جدیدتر باشد) → **دو تونل quick** (پیش‌فرض) به 5678 و
+3001. `--local` تونل‌ها را رد می‌کند. Idempotent است؛ چیزی که بالا است دست نمی‌خورد.
+
+بخش تونل کارش را خودش می‌کند: URL تازه را از لاگ cloudflared می‌خواند، `N8N_WEBHOOK_URL`
+را در `.env` و `MINIAPP_URL` را در `backend/.env` همگام می‌کند، اگر URL تغییر کرده
+باشد کانتینر n8n را **بازسازی** می‌کند (env فقط موقع ساخت خوانده می‌شود) و بک‌اند
+را ری‌استارت می‌کند تا MINIAPP_URL تازه را بگیرد.
+
+**دو تله‌ی پیاده‌سازی که در تست زنده خوردیم (هر دو رفع و داخل اسکریپت مانده):**
+| علامت | علت/رفع |
+|---|---|
+| `./.env: line 14: $'\E[1': command not found` — و خط 14 `.env` خراب شد: `N8N_WEBHOOK_URL=` + پیام `ok` با رنگ + URL | تابع `start_tunnel` پیام‌های موفقیت را در stdout می‌گفت؛ وقتی خروجی‌اش در `$(...)` گرفته می‌شود، «tunnel already running» وسط URL می‌نشیند. رفع: فقط URL در stdout، همه‌ی وضعیت‌ها در stderr (`>&2`) |
+| `sed: unterminated 's' command` روی URL با جداکننده `\|` | regex با `\|` روی URL (که `/` دارد) می‌شکست. رفع: `set_env` فقط روی **کلید** regex می‌زند (حذف خط `^KEY=` با grep) و مقدار را append می‌کند — هیچ regex روی مقدار نمی‌رود |
+
+**درس استقرار که این اسکریپت خودش حل می‌کند:** بعد از **بازسازی** کانتینر n8n
+(نه restart)، تونل quick قدیمی به 5678 با `docker rm` قطع می‌شود و URL قبلی 530
+دائمی می‌خورد — درست همان‌طور که تلگرام آن را با `last_error_message: "Wrong
+response from the webhook: 530"` و `pending_update_count` رو به رشد نشان می‌دهد.
+`up.sh` URL تازه را همه‌جا همگام می‌کند و کانتینر را بازسازی می‌کند؛ ولی **ثبت
+مجدد وبوک** را دستی باید کنترل کرد (§۱۹ درس: بعد از تغییر env، unpublish→publish
+یا چک getWebhookInfo). در تست ۲۰۲۶-۰۹-۲۴ بعد از بازسازی، n8n خودش وبوک را با URL
+جدید setWebhook کرد (getWebhookInfo بدون دست‌کاری درست شد) — ولی برای اطمینان
+همیشه getWebhookInfo را چک کن، و اگر مطابقت نداشت unpublish→publish بزن.
 
 پروژه تحت **گیت** است (شاخه `main`، هویت repo-local: `nimux <nimux@local>`).
 هفده کامیت تا ۲۰۲۶-۰۹-۱۲ — به ترتیب: `9c3507f` قدم ۱، `d8ba600` علامت‌گذاری
@@ -815,6 +844,8 @@ active نشده** — نوعش و دکمه‌هایش با workflow قدیمی �
 | `send-now` پست را نمی‌فرستاد | پست باید `approved` باشد (نه draft). قرارداد: غیر-approved → 404، درگیری همزمان → 409. |
 | webhook تلگرام ناپدید می‌شد بعد از recreate کانتینر | quick tunnel به 5678 (برای n8n) **با `docker rm` کانتینر قطع می‌شود** نه فقط با ری‌استارت؛ URL قبلی مرده (530 دائمی حتی با origin سالم). رفع: تونل تازه `setsid cloudflared tunnel --url http://127.0.0.1:5678 ... > /tmp/cloudflared-n8n.log &` + آپدیت `N8N_WEBHOOK_URL` و کانتینر. |
 | `N8N_WEBHOOK_URL` روی آرگومان `recreate-n8n.sh` اعمال نمی‌شد | اسکریپت `.env` را `set -a; . ./.env` می‌خواند و مقدار .env بر متغیر محیطی override می‌شود. رفع: **`.env` را عوض کن**، نه env آرگومانی. `.env` منبع حقیقت `N8N_WEBHOOK_URL` است. |
+| `$'\E[1': command not found` روی `./.env` — `.env` خراب شد (`N8N_WEBHOOK_URL=` + پیام `ok` رنگی + URL) | `start_tunnel` پیام‌های موفقیت را به stdout می‌گفت؛ وقتی با `$(...)` captured می‌شود، «tunnel already running» وسط URL می‌نشیند. رفع: فقط URL در stdout، همه‌ی وضعیت‌ها در stderr `>&2` |
+| `sed: unterminated 's' command` روی `set_env` با جداکننده‌ی `\|` | regex با `\|` روی مقدار (URL دارای `/`) می‌شکست. رفع: `set_env` فقط روی **کلید** regex می‌زند (`grep -vE '^KEY='` + append) — هیچ regex روی مقدار نمی‌رود |
 
 
 ## ۱۰) قالب Caption (نسخه فعلی — تأییدشده)
