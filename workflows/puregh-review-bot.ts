@@ -12,7 +12,9 @@
 //          Works for status draft AND approved (undo approval = free the repo).
 //   2. Bot Updates (telegramTrigger) — handles
 //        - callback del:<id>  → delete post + edit the message + ack
-//        - text «شروع دیسکاوری» → Execute Workflow → Discovery workflow
+//        - text «/start»         → reply «سلام، ربات روشن است»
+//        - text «شروع دیسکاوری»  → reply «دیسکاوری شروع شد» + run Discovery
+//        - any other text        → reply «دستور ناشناخته است»
 //
 // «همین الان بفرست» deliberately lives ONLY in the Mini App (final list),
 // never as a bot button — decided 2026-09-21.
@@ -339,20 +341,78 @@ const runDiscovery = node({
   },
 });
 
-// TEXT branch — «شروع دیسکاوری» command launches Discovery.
-const isStartText = switchCase({
+// TEXT branch — route plain text messages:
+//   /start               → «سلام، ربات روشن است»
+//   شروع دیسکاوری        → «دیسکاوری شروع شد» + launch Discovery
+//   anything else        → «دستور ناشناخته است»
+const routeText = switchCase({
   version: 3.4,
   config: {
-    name: 'Is Start Text',
+    name: 'Route Text',
     position: [720, 672],
     parameters: {
       rules: {
         values: [
+          { conditions: { options: { caseSensitive: false, leftValue: '', typeValidation: 'string' }, conditions: [{ leftValue: expr('{{ $json.text }}'), operator: { type: 'string', operation: 'equals' }, rightValue: '/start' }], combinator: 'and' } },
           { conditions: { options: { caseSensitive: false, leftValue: '', typeValidation: 'string' }, conditions: [{ leftValue: expr('{{ $json.text }}'), operator: { type: 'string', operation: 'equals' }, rightValue: 'شروع دیسکاوری' }], combinator: 'and' } },
         ],
       },
-      options: { fallbackOutput: 'extra', renameFallbackOutput: 'Ignored' },
+      options: { fallbackOutput: 'extra', renameFallbackOutput: 'Unknown' },
     },
+  },
+});
+
+const sendHello = node({
+  type: 'n8n-nodes-base.telegram',
+  version: 1.2,
+  config: {
+    name: 'Send Hello',
+    position: [944, 672],
+    onError: 'continueRegularOutput',
+    parameters: {
+      resource: 'message',
+      operation: 'sendMessage',
+      chatId: expr('{{ $("Parse Update").first().json.chatId }}'),
+      text: 'سلام، ربات روشن است',
+      additionalFields: { appendAttribution: false },
+    },
+    credentials: { telegramApi: TELEGRAM_CRED },
+  },
+});
+
+const sendDiscoveryStarted = node({
+  type: 'n8n-nodes-base.telegram',
+  version: 1.2,
+  config: {
+    name: 'Send Discovery Started',
+    position: [944, 768],
+    onError: 'continueRegularOutput',
+    parameters: {
+      resource: 'message',
+      operation: 'sendMessage',
+      chatId: expr('{{ $("Parse Update").first().json.chatId }}'),
+      text: 'دیسکاوری شروع شد',
+      additionalFields: { appendAttribution: false },
+    },
+    credentials: { telegramApi: TELEGRAM_CRED },
+  },
+});
+
+const sendUnknown = node({
+  type: 'n8n-nodes-base.telegram',
+  version: 1.2,
+  config: {
+    name: 'Send Unknown',
+    position: [944, 864],
+    onError: 'continueRegularOutput',
+    parameters: {
+      resource: 'message',
+      operation: 'sendMessage',
+      chatId: expr('{{ $("Parse Update").first().json.chatId }}'),
+      text: 'دستور ناشناخته است',
+      additionalFields: { appendAttribution: false },
+    },
+    credentials: { telegramApi: TELEGRAM_CRED },
   },
 });
 
@@ -374,7 +434,7 @@ const answerUnknown = node({
 });
 
 const note = sticky(
-  '## Pure GitHub — Review Bot\n\nModel B: Discovery posts arrive here via Execute Workflow; each post gets a message with caption + model verdict line + a web_app open-app button + a «حذف از لیست» button (posts-only delete; works for draft & approved). «همین الان بفرست» is Mini-App-only. Text «شروع دیسکاوری» runs the Discovery workflow.\n\nThe old 59-node bot stays untouched.',
+  '## Pure GitHub — Review Bot\n\nModel B: Discovery posts arrive here via Execute Workflow; each post gets a message with caption + model verdict line + a web_app open-app button + a «حذف از لیست» button (posts-only delete; works for draft & approved). «همین الان بفرست» is Mini-App-only. Text commands: «/start» → «سلام، ربات روشن است»; «شروع دیسکاوری» → «دیسکاوری شروع شد» + runs Discovery; anything else → «دستور ناشناخته است».\n\nThe old 59-node bot stays untouched.',
   [fromDiscovery],
   { color: 5 },
 );
@@ -399,6 +459,7 @@ export default workflow('puregh-review-bot', 'Pure GitHub — Review Bot')
       // unknown callback prefix (parseCallback output 2)
       .onCase(2, answerUnknown))
     // text (routeUpdate output 1)
-    .onCase(1, isStartText
-      .onCase(0, runDiscovery)
-      .onCase(2, answerUnknown)));
+    .onCase(1, routeText
+      .onCase(0, sendHello)
+      .onCase(1, sendDiscoveryStarted.to(runDiscovery))
+      .onCase(2, sendUnknown)));

@@ -1,6 +1,6 @@
 # AGENTS.md — حافظه پروژه Pure GitHub (برای دستیار opencode)
 
-> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-22
+> این فایل را در شروع هر جلسه بخوان. آخرین به‌روزرسانی: 2026-09-23
 
 ## ۱) پروژه چیست؟
 
@@ -402,6 +402,13 @@ published: 4, 5, 6, 13. فیکسچرهای هر دو تست E2E (۱۵تایی و
   integrated). discovery حالا **تریگرش دیگر Daily Schedule نیست** — یک
   executeWorkflowTrigger v1.2 به نام From Review Bot (این طراحی deliberate است تا
   discovery فقط وقتی اجرا شود که کاربر خواسته؛ schedule حذف شد).
+- **مسیرهای متنی ربات (۲۰۲۶-۰۹-۲۳):** `Route Text` (switchCase) سه متن را هدایت
+  می‌کند: `/start` → `Send Hello` («سلام، ربات روشن است») · «شروع دیسکاوری» →
+  `Send Discovery Started` («دیسکاوری شروع شد») + `Run Discovery` ·
+  هر متن دیگر → `Send Unknown` («دستور ناشناخته است»). callback ها از `Parse
+  Callback` و متن‌ها از `Route Text` ← خروجی ۱ `Route Update`؛ قبلاً `Is Start Text`
+  فقط «شروع دیسکاوری» را تشخیص می‌داد و بقیه را گم می‌کرد. هر سه نود sendMessage
+  `onError: continueRegularOutput` دارند (بحث همان ریسک زنجیره‌ای).
 - 🔴 **ریسک زنجیره‌ای که رفع شد:** `answerStart.to(runDiscovery)` یعنی اگر ack
   تلگرام خطا بدهد discovery شلیک نمی‌شد. چون `answerQuery` best-effort است (query
   کهنه/تکراری را تلگرام رد می‌کند)، روی **۵ نود ack/ویرایش** (`Answer Start`,
@@ -806,6 +813,8 @@ active نشده** — نوعش و دکمه‌هایش با workflow قدیمی �
 | فرانت `query_id` می‌فرستاد، بک‌اند `queryId` می‌خواند | باگ همیشگی (نه فقط این سشن). رفع: helper `qid()` هر دو شکل را می‌پذیرد. |
 | فیکسچر غلط ساخته می‌شد | `verdict` روی جدول `repositories` است نه `posts`؛ نام ستون‌ها `gh_created_at`/`gh_pushed_at`؛ `model` روی posts است. |
 | `send-now` پست را نمی‌فرستاد | پست باید `approved` باشد (نه draft). قرارداد: غیر-approved → 404، درگیری همزمان → 409. |
+| webhook تلگرام ناپدید می‌شد بعد از recreate کانتینر | quick tunnel به 5678 (برای n8n) **با `docker rm` کانتینر قطع می‌شود** نه فقط با ری‌استارت؛ URL قبلی مرده (530 دائمی حتی با origin سالم). رفع: تونل تازه `setsid cloudflared tunnel --url http://127.0.0.1:5678 ... > /tmp/cloudflared-n8n.log &` + آپدیت `N8N_WEBHOOK_URL` و کانتینر. |
+| `N8N_WEBHOOK_URL` روی آرگومان `recreate-n8n.sh` اعمال نمی‌شد | اسکریپت `.env` را `set -a; . ./.env` می‌خواند و مقدار .env بر متغیر محیطی override می‌شود. رفع: **`.env` را عوض کن**، نه env آرگومانی. `.env` منبع حقیقت `N8N_WEBHOOK_URL` است. |
 
 
 ## ۱۰) قالب Caption (نسخه فعلی — تأییدشده)
