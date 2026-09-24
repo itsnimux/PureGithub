@@ -687,6 +687,22 @@ discovery/regression.mjs    ۳۷ فیکسچر مرجع در ۴ گروه (بای�
 build فرانت (فقط اگر سورس جدیدتر باشد) → **دو تونل quick** (پیش‌فرض) به 5678 و
 3001. `--local` تونل‌ها را رد می‌کند. Idempotent است؛ چیزی که بالا است دست نمی‌خورد.
 
+### استفاده و متوقف کردن (پرسش کاربر، ثبت شد)
+```bash
+./scripts/up.sh            # بالا آوردن همه (پیش‌فرض: تونل‌ها هم)
+./scripts/up.sh --local    # فقط لوکال، بدون تونل
+```
+متوقف کردن — `up.sh` عمداً `down` ندارد (idempotent است)؛ پایین آوردن،
+قطعه‌به‌قطعه با ترتیب معکوس، و volume ها دست نمی‌خوردند:
+```bash
+pkill -f cloudflared                     # تونل‌های quick (5678 و 3001)
+pkill -f 'puregh-miniapp.*server.js'     # بک‌اند مینیاپ :3001
+docker stop n8n                          # n8n
+docker compose stop                      # puregh-db
+```
+دوباره بالا آوردن = همان `./scripts/up.sh`. `docker compose down -v` data ها را
+حذف می‌کند — عمداً لازم نیست، فقط اگر واقعاً پاک‌سازی کامل خواستی.
+
 بخش تونل کارش را خودش می‌کند: URL تازه را از لاگ cloudflared می‌خواند، `N8N_WEBHOOK_URL`
 را در `.env` و `MINIAPP_URL` را در `backend/.env` همگام می‌کند، اگر URL تغییر کرده
 باشد کانتینر n8n را **بازسازی** می‌کند (env فقط موقع ساخت خوانده می‌شود) و بک‌اند
